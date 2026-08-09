@@ -3,7 +3,7 @@
  * information, and encrypting it would only make it unsearchable.
  */
 import { supabase } from '../supabase';
-import type { Ipo, SyncLogRow } from '../types';
+import type { Ipo, IpoGmp, SyncLogRow } from '../types';
 import { dbError } from './error';
 
 export type IpoBucket = 'open' | 'upcoming' | 'closed' | 'listed';
@@ -69,6 +69,53 @@ export async function updateIpo(id: string, patch: Partial<Ipo>): Promise<Ipo> {
 }
 
 /**
+ * Grey market premium readings for one IPO, oldest first so a chart can plot
+ * them directly.
+ *
+ * Fetched newest-first and reversed, so `limit` means "the most recent N"
+ * rather than "the first N ever recorded".
+ */
+export async function gmpHistory(ipoId: string, limit = 60): Promise<IpoGmp[]> {
+  const { data, error } = await supabase
+    .from('ipo_gmp')
+    .select('*')
+    .eq('ipo_id', ipoId)
+    .order('observed_at', { ascending: false })
+    .limit(limit);
+  if (error) throw dbError(error);
+  return (data ?? []).slice().reverse();
+}
+
+/** Newest reading, or null. Pure — the caller already has the rows. */
+export function latestGmp(rows: IpoGmp[]): IpoGmp | null {
+  return rows.length > 0 ? rows[rows.length - 1] : null;
+}
+
+/**
+ * Direction of travel between the two most recent readings.
+ *
+ * A single GMP number is close to noise — whether it is rising into the close
+ * is the part anyone actually reads.
+ */
+export function gmpTrend(rows: IpoGmp[]): 'up' | 'down' | 'flat' | 'unknown' {
+  const quoted = rows.filter((row) => row.gmp !== null);
+  if (quoted.length < 2) return 'unknown';
+  const latest = quoted[quoted.length - 1].gmp!;
+  const previous = quoted[quoted.length - 2].gmp!;
+  if (latest > previous) return 'up';
+  if (latest < previous) return 'down';
+  return 'flat';
+}
+
+/** GMP goes stale within hours, far faster than the IPO list itself. */
+export function gmpIsStale(rows: IpoGmp[], now = new Date(), hours = 24): boolean {
+  const latest = latestGmp(rows);
+  if (!latest) return true;
+  const age = now.getTime() - new Date(latest.observed_at).getTime();
+  return age > hours * 60 * 60 * 1000;
+}
+
+/**
  * Most recent sync attempt per provider, so the app can say *why* the list
  * looks stale instead of silently showing old data.
  */
@@ -77,7 +124,9 @@ export async function latestSyncStatus(): Promise<SyncLogRow[]> {
     .from('sync_log')
     .select('*')
     .order('ran_at', { ascending: false })
-    .limit(10);
+    // Four providers report per run, so 10 rows is only two and a half runs —
+    // not enough to still name a provider that failed a couple of runs ago.
+    .limit(20);
   if (error) throw dbError(error);
 
   const seen = new Set<string>();

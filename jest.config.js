@@ -12,13 +12,16 @@
 module.exports = {
   preset: 'ts-jest/presets/default-esm',
   testEnvironment: 'node',
-  testMatch: ['**/lib/**/*.test.ts'],
+  testMatch: ['**/lib/**/*.test.ts', '**/supabase/functions/**/*.test.ts'],
   // Argon2id at 64 MiB takes seconds by design; several tests derive keys.
   testTimeout: 60_000,
   extensionsToTreatAsEsm: ['.ts'],
   moduleNameMapper: {
     // ts-jest ESM needs relative specifiers resolved without the .js suffix.
     '^(\\.{1,2}/.*)\\.js$': '$1',
+    // Deno requires the extension on relative imports, Node does not accept it.
+    // Stripping it here lets one specifier — './parse.ts' — serve both.
+    '^(\\.{1,2}/.*)\\.ts$': '$1',
     // Unit tests exercise the pure encryption boundary, not the network. This
     // keeps them from booting the real Supabase client and its RN polyfills.
     '^\\.\\./supabase$': '<rootDir>/lib/testing/supabaseMock.ts',

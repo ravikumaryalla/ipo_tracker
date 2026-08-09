@@ -57,9 +57,16 @@ export default function IposTab() {
   }, [ipos.data]);
 
   const staleWarning = useMemo(() => {
-    const lastOk = sync.data?.filter((row) => row.ok).sort((a, b) => b.ran_at.localeCompare(a.ran_at))[0];
+    // Only the providers that actually supply the IPO list count towards
+    // freshness. The GMP feed and the cron heartbeat also write sync_log, and a
+    // run where only those succeeded would otherwise suppress a genuine "this
+    // list is days old" warning.
+    const listRows = sync.data?.filter(
+      (row) => row.provider !== 'CHITTORGARH_GMP' && row.provider !== 'CRON',
+    );
+    const lastOk = listRows?.filter((row) => row.ok).sort((a, b) => b.ran_at.localeCompare(a.ran_at))[0];
     if (!lastOk) {
-      const failure = sync.data?.[0];
+      const failure = listRows?.[0];
       return failure
         ? `IPO sync is failing (${failure.provider}: ${failure.message ?? 'unknown error'}). Add IPOs manually until it recovers.`
         : null;

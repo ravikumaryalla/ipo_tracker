@@ -1,0 +1,59 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@supabase/supabase-js@2": "2.112.2"
+  },
+  "jsr": {
+    "@supabase/supabase-js@2.112.2": {
+      "integrity": "6462b34553f02db1534f534318b0abf46a4d20994e93725233dab75ebbf78b7f"
+    }
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@expo-google-fonts/inter@~0.4.2",
+        "npm:@expo-google-fonts/sora@~0.4.2",
+        "npm:@noble/ciphers@^2.3.0",
+        "npm:@noble/hashes@^2.3.0",
+        "npm:@react-native-async-storage/async-storage@2.2.0",
+        "npm:@supabase/supabase-js@^2.112.2",
+        "npm:@tanstack/query-async-storage-persister@^5.101.4",
+        "npm:@tanstack/react-query-persist-client@^5.101.4",
+        "npm:@tanstack/react-query@^5.101.4",
+        "npm:@types/jest@30",
+        "npm:@types/react@~19.2.2",
+        "npm:cross-env@^10.1.0",
+        "npm:date-fns@^4.4.0",
+        "npm:expo-clipboard@~57.0.1",
+        "npm:expo-constants@~57.0.9",
+        "npm:expo-crypto@~57.0.1",
+        "npm:expo-linear-gradient@~57.0.1",
+        "npm:expo-linking@~57.0.5",
+        "npm:expo-local-authentication@~57.0.2",
+        "npm:expo-notifications@~57.0.9",
+        "npm:expo-router@~57.0.11",
+        "npm:expo-screen-capture@~57.0.1",
+        "npm:expo-secure-store@~57.0.1",
+        "npm:expo-splash-screen@~57.0.5",
+        "npm:expo-status-bar@~57.0.1",
+        "npm:expo-symbols@~57.0.2",
+        "npm:expo@~57.0.11",
+        "npm:jest@^30.4.2",
+        "npm:react-dom@19.2.3",
+        "npm:react-native-gesture-handler@2.32",
+        "npm:react-native-get-random-values@1.11",
+        "npm:react-native-reanimated@4.5.1",
+        "npm:react-native-safe-area-context@5.7",
+        "npm:react-native-screens@4.26",
+        "npm:react-native-svg@15.15.4",
+        "npm:react-native-url-polyfill@4",
+        "npm:react-native-web@~0.21.2",
+        "npm:react-native-worklets@0.10.1",
+        "npm:react-native@0.86.2",
+        "npm:react@19.2.3",
+        "npm:ts-jest@^29.4.12",
+        "npm:typescript@~6.0.3"
+      ]
+    }
+  }
+}

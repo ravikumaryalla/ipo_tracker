@@ -169,6 +169,28 @@ export type SyncLogRow = {
   ran_at: string;
 };
 
+/**
+ * One grey market premium reading. Unofficial, unregulated data — anything
+ * rendering it must say so. `ipo_id` is null while a reading has not been
+ * matched to an IPO yet; sync-ipos retries those on every run.
+ */
+export type IpoGmp = {
+  id: string;
+  ipo_id: string | null;
+  provider: string;
+  provider_slug: string;
+  company_name: string;
+  open_date: string | null;
+  observed_at: string;
+  gmp: number | null;
+  gmp_percent: number | null;
+  price: number | null;
+  sub_times: number | null;
+  source_url: string | null;
+  synced_at: string;
+  created_at: string;
+};
+
 type TableShape<Row, Insert = Partial<Row>, Update = Partial<Row>> = {
   Row: Row;
   Insert: Insert;
@@ -183,6 +205,7 @@ export type Database = {
       brokers: TableShape<Broker>;
       demat_accounts: TableShape<DematAccountRow>;
       ipos: TableShape<Ipo>;
+      ipo_gmp: TableShape<IpoGmp>;
       ipo_applications: TableShape<IpoApplication>;
       credential_history: TableShape<CredentialHistoryRow>;
       sync_log: TableShape<SyncLogRow>;

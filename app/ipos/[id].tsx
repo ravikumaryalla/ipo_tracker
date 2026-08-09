@@ -5,7 +5,7 @@ import { Linking, StyleSheet, Text, View } from 'react-native';
 
 import { Badge, Button, Card, Loading, Screen } from '../../components/ui';
 import { colors, formatInr, spacing, type } from '../../constants/theme';
-import { getIpo } from '../../lib/db/ipos';
+import { getIpo, gmpHistory, gmpIsStale, gmpTrend, latestGmp } from '../../lib/db/ipos';
 import { listApplications } from '../../lib/db/applications';
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -20,12 +20,33 @@ function Row({ label, value }: { label: string; value: string }) {
 const formatDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
 
+const formatDateTime = (iso: string) =>
+  new Date(iso).toLocaleString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+const TREND_GLYPH = { up: '▲', down: '▼', flat: '–', unknown: '' } as const;
+const TREND_COLOR = {
+  up: colors.success,
+  down: colors.danger,
+  flat: colors.textMuted,
+  unknown: colors.text,
+} as const;
+
 export default function IpoDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
 
   const ipo = useQuery({ queryKey: ['ipo', id], queryFn: () => getIpo(id!), enabled: Boolean(id) });
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
+  const gmp = useQuery({
+    queryKey: ['gmp', id],
+    queryFn: () => gmpHistory(id!),
+    enabled: Boolean(id),
+  });
 
   if (ipo.isLoading) return <Loading />;
   if (!ipo.data) return <Screen><Text style={styles.label}>Not found.</Text></Screen>;
@@ -34,6 +55,10 @@ export default function IpoDetail() {
   const mine = (applications.data ?? []).filter((a) => a.ipo_id === id);
   const lotAmount =
     data.lot_size && data.price_band_max ? data.lot_size * data.price_band_max : null;
+
+  const gmpRows = gmp.data ?? [];
+  const newestGmp = latestGmp(gmpRows);
+  const trend = gmpTrend(gmpRows);
 
   return (
     <Screen>
@@ -77,6 +102,33 @@ export default function IpoDetail() {
         </Card>
       )}
 
+      {newestGmp?.gmp != null && (
+        <Card>
+          <View style={styles.gmpHeader}>
+            <Text style={styles.sectionTitle}>Grey market premium</Text>
+            <Text style={[styles.gmpValue, { color: TREND_COLOR[trend] }]}>
+              {`${TREND_GLYPH[trend]} ${formatInr(newestGmp.gmp)}`}
+              {newestGmp.gmp_percent != null ? ` (${newestGmp.gmp_percent}%)` : ''}
+            </Text>
+          </View>
+          <Row label="Last updated" value={formatDateTime(newestGmp.observed_at)} />
+          {gmpIsStale(gmpRows) && (
+            <Text style={styles.caption}>
+              This quote is over a day old. Grey market prices move by the hour.
+            </Text>
+          )}
+          {/*
+            Non-negotiable. GMP is unofficial dealer chatter, SEBI has cautioned
+            retail investors against relying on it, and this card sits directly
+            above an "Apply from an account" button.
+          */}
+          <Text style={styles.caption}>
+            Unofficial grey-market estimate, not exchange data. It is not a prediction of the
+            listing price. Source: Chittorgarh / InvestorGain.
+          </Text>
+        </Card>
+      )}
+
       {mine.length > 0 && (
         <Card>
           <Text style={styles.sectionTitle}>Your applications</Text>
@@ -117,6 +169,14 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.borderSoft,
     gap: spacing.lg,
   },
+  gmpHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  gmpValue: { ...type.bodyStrong, fontSize: 16 },
+  caption: { ...type.body, color: colors.textMuted, fontSize: 12, marginTop: spacing.sm },
   label: { ...type.body, color: colors.textMuted, fontSize: 14, flexShrink: 1 },
   value: { ...type.bodyStrong, color: colors.text, fontSize: 14, textAlign: 'right', flexShrink: 1 },
 });

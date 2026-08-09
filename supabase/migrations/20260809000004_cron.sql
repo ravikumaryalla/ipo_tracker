@@ -1,3 +1,8 @@
+-- SUPERSEDED by 20260810000002_cron.sql, which unschedules the job created
+-- here. The '0 4,13 * * *' expression below runs the evening job at 18:30 IST,
+-- not the 19:00 IST the comment claims — a cron expression has one minute
+-- field and cannot express :00 and :30 in a single entry.
+--
 -- Schedule the IPO sync.
 --
 -- Run this AFTER deploying the Edge Function and setting the two settings
