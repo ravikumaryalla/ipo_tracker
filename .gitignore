@@ -42,3 +42,6 @@ yarn-error.*
 
 # local env
 .env
+
+# Byproduct of deno check; the Supabase CLI resolves function deps itself.
+deno.lock
