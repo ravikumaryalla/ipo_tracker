@@ -15,13 +15,13 @@ import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import React, { useCallback, useEffect } from 'react';
-import { View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import 'react-native-get-random-values';
 
-import { Loading } from '../components/ui';
-import { colors, fonts } from '../constants/theme';
+import { Button, Loading } from '../components/ui';
+import { colors, fonts, spacing, type } from '../constants/theme';
 import { AuthProvider, useAuth } from '../lib/auth';
 import { VaultProvider, useVault } from '../lib/vault';
 
@@ -60,7 +60,8 @@ function isPersistable(queryKey: readonly unknown[]): boolean {
 
 function RouteGate({ children }: { children: React.ReactNode }) {
   const { session, loading: authLoading } = useAuth();
-  const { status } = useVault();
+  const { status, refresh } = useVault();
+  const [retrying, setRetrying] = useState(false);
   // Typed loosely: expo-router narrows this to the known route tuples, but we
   // only care about the first two path segments.
   const segments = useSegments() as string[];
@@ -70,7 +71,7 @@ function RouteGate({ children }: { children: React.ReactNode }) {
   // decrypted rows would sit in the query cache and repopulate the UI the
   // moment a screen re-rendered, whatever the lock screen said.
   useEffect(() => {
-    if (status === 'locked' || status === 'loading') {
+    if (status === 'locked' || status === 'loading' || status === 'error') {
       queryClient.removeQueries({
         predicate: (query) => !isPersistable(query.queryKey),
       });
@@ -90,8 +91,9 @@ function RouteGate({ children }: { children: React.ReactNode }) {
     }
 
     // Signed in. Wait for the profile read before deciding about the vault,
-    // otherwise we'd bounce the user to setup on every cold start.
-    if (status === 'loading') return;
+    // otherwise we'd bounce the user to setup on every cold start. 'error'
+    // renders its own retry screen below instead of navigating anywhere.
+    if (status === 'loading' || status === 'error') return;
 
     if (status === 'uninitialised') {
       if (segments[1] !== 'setup') router.replace('/vault/setup');
@@ -111,6 +113,39 @@ function RouteGate({ children }: { children: React.ReactNode }) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: 'center' }}>
         <Loading />
+      </View>
+    );
+  }
+
+  // The profile read failed — without this screen the gate above would wait on
+  // a status that never changes and the user would be parked on a blank screen.
+  if (session && status === 'error') {
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: colors.bg,
+          justifyContent: 'center',
+          paddingHorizontal: spacing.xl,
+        }}
+      >
+        <Text style={{ ...type.body, color: colors.text, textAlign: 'center', marginBottom: spacing.lg }}>
+          Couldn&apos;t load your account. Check your connection and try again.
+        </Text>
+        <Button
+          title="Retry"
+          loading={retrying}
+          onPress={async () => {
+            setRetrying(true);
+            try {
+              await refresh();
+            } catch {
+              // Still failing — stay on this screen; the user can retry again.
+            } finally {
+              setRetrying(false);
+            }
+          }}
+        />
       </View>
     );
   }

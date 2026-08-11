@@ -32,9 +32,10 @@ export function AccountForm({
   const [clientId, setClientId] = useState(initial?.client_id ?? '');
   const [dpId, setDpId] = useState(initial?.dp_id ?? '');
   const [boId, setBoId] = useState(initial?.bo_id ?? '');
-  const [username, setUsername] = useState(initial?.username ?? '');
+  const [email, setEmail] = useState(initial?.email ?? '');
+  const [phone, setPhone] = useState(initial?.phone ?? '');
   const [password, setPassword] = useState(initial?.password ?? '');
-  const [txnPassword, setTxnPassword] = useState(initial?.txn_password ?? '');
+  const [mpin, setMpin] = useState(initial?.mpin ?? '');
   const [upiId, setUpiId] = useState(initial?.upi_id ?? '');
   const [linkedBank, setLinkedBank] = useState(initial?.linked_bank ?? '');
   const [pan, setPan] = useState(initial?.pan ?? '');
@@ -63,9 +64,10 @@ export function AccountForm({
         client_id: clientId.trim(),
         dp_id: dpId.trim(),
         bo_id: boId.trim(),
-        username: username.trim(),
+        email: email.trim(),
+        phone: phone.trim(),
         password,
-        txn_password: txnPassword,
+        mpin,
         upi_id: upiId.trim(),
         linked_bank: linkedBank.trim(),
         pan: pan.trim().toUpperCase(),
@@ -120,15 +122,22 @@ export function AccountForm({
           Encrypted on this phone before it is saved. The server never sees these.
         </Text>
 
-        <Field label="Username" value={username} onChangeText={setUsername} autoCapitalize="none" />
+        <Field
+          label="Email"
+          value={email}
+          onChangeText={setEmail}
+          autoCapitalize="none"
+          keyboardType="email-address"
+        />
+        <Field label="Phone number" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
         <Field label="Password" value={password} onChangeText={setPassword} autoCapitalize="none" secureTextEntry />
         <Field
-          label="Transaction / PIN password"
-          value={txnPassword}
-          onChangeText={setTxnPassword}
-          autoCapitalize="none"
+          label="MPIN"
+          value={mpin}
+          onChangeText={setMpin}
+          keyboardType="number-pad"
           secureTextEntry
-          hint="The second password brokers ask for when placing orders."
+          hint="The short numeric PIN brokers ask for at login or order placement."
         />
       </Card>
 

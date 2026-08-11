@@ -3,7 +3,7 @@
  * lock. Offers biometrics when they are set up, passphrase always, and the
  * recovery code as the last resort.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 
 import { Banner, BrandMark, Button, ErrorText, Field, Screen } from '../../components/ui';
@@ -21,13 +21,25 @@ export default function VaultUnlock() {
   const [showRecovery, setShowRecovery] = useState(false);
   const [support, setSupport] = useState<BiometricSupport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusyState] = useState(false);
+  // Mirrored in a ref so tryBiometrics can check it without depending on the
+  // state value — a `busy` dep would change its identity and retrigger the
+  // auto-prompt effect below.
+  const busyRef = useRef(false);
+  const setBusy = (value: boolean) => {
+    busyRef.current = value;
+    setBusyState(value);
+  };
 
   useEffect(() => {
     getBiometricSupport().then(setSupport).catch(() => undefined);
   }, []);
 
+  // Every unlock path re-checks `busy`: the keyboard "go" key and the buttons
+  // can fire while a derivation is already running, and a second concurrent
+  // Argon2 run means another multi-second stall and a 64 MiB allocation.
   const tryBiometrics = useCallback(async () => {
+    if (busyRef.current) return;
     setError(null);
     setBusy(true);
     try {
@@ -46,6 +58,7 @@ export default function VaultUnlock() {
   }, [biometricsEnabled, support?.enrolled, tryBiometrics]);
 
   async function onUnlock() {
+    if (busy) return;
     setError(null);
     if (!passphrase) return setError('Enter your master passphrase.');
     setBusy(true);
@@ -60,6 +73,7 @@ export default function VaultUnlock() {
   }
 
   async function onRecover() {
+    if (busy) return;
     setError(null);
     if (!recoveryCode.trim()) return setError('Enter your recovery code.');
     setBusy(true);
@@ -126,6 +140,7 @@ export default function VaultUnlock() {
               icon="fingerprint"
               variant="secondary"
               onPress={tryBiometrics}
+              disabled={busy}
             />
           )}
 

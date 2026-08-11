@@ -111,9 +111,10 @@ export default function AccountDetail() {
       </Card>
 
       <Card>
-        <SecretField label="Username" value={data.username} />
+        <SecretField label="Email" value={data.email} />
+        <SecretField label="Phone number" value={data.phone} />
         <SecretField label="Password" value={data.password} />
-        <SecretField label="Transaction password" value={data.txn_password} />
+        <SecretField label="MPIN" value={data.mpin} />
         {data.password_changed_at && (
           <Text style={styles.meta}>
             Password last changed {new Date(data.password_changed_at).toLocaleDateString('en-IN')}

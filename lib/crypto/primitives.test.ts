@@ -77,6 +77,15 @@ describe('deriveVaultKey', () => {
     await expect(deriveVaultKey('', generateSalt(), P)).rejects.toThrow(/required/i);
   });
 
+  it('matches a known Argon2id answer (guards against a backend swap changing keys)', async () => {
+    // Derived once with @noble/hashes argon2id at these parameters. If the KDF
+    // backend in argon2.ts ever produces something else for the same inputs,
+    // every existing vault would stop unlocking — this test is the tripwire.
+    const salt = toBase64(new TextEncoder().encode('0123456789abcdef'));
+    const key = await deriveVaultKey(PASSPHRASE, salt, P);
+    expect(toBase64(key)).toBe('wzPEFVvhVXy4Rdln99+vLMlE/TkQy0pvGpQgG5yQWfk=');
+  });
+
   it('normalises unicode so the same typed passphrase always works', async () => {
     const salt = generateSalt();
     // Same text, composed (U+00F6) vs decomposed (o + U+0308).

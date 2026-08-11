@@ -12,12 +12,15 @@
  *  - XChaCha20-Poly1305 for encryption: authenticated (a tampered ciphertext
  *    fails loudly rather than decrypting to garbage) and takes a 24-byte nonce,
  *    which is large enough that random nonces never realistically collide.
- *  - @noble/*: audited, pure TypeScript, and runs under Hermes. A native
- *    libsodium binding would be faster but would not run in Expo Go.
+ *  - Key derivation goes through argon2.ts: native libsodium in real builds
+ *    (fast, keeps the unlock screen responsive), @noble/hashes as a pure-JS
+ *    fallback under Node/Jest and Expo Go. Identical output either way.
+ *  - @noble/* for everything else: audited, pure TypeScript, runs under Hermes.
  */
-import { argon2idAsync } from '@noble/hashes/argon2.js';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { randomBytes } from '@noble/ciphers/utils.js';
+
+import { argon2idRaw } from './argon2';
 
 export const KEY_BYTES = 32;
 export const NONCE_BYTES = 24;
@@ -85,12 +88,7 @@ export async function deriveVaultKey(
 ): Promise<Uint8Array> {
   if (!passphrase) throw new Error('Passphrase is required');
   const salt = fromBase64(saltB64);
-  return argon2idAsync(encoder.encode(passphrase.normalize('NFKC')), salt, {
-    ...params,
-    // Yield to the event loop between passes so the UI thread keeps painting
-    // its progress spinner instead of freezing for several seconds.
-    asyncTick: 16,
-  });
+  return argon2idRaw(encoder.encode(passphrase.normalize('NFKC')), salt, params);
 }
 
 /**

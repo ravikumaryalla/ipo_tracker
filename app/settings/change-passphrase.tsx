@@ -38,6 +38,7 @@ export default function ChangePassphrase() {
   }, [newCode]);
 
   async function onSubmit() {
+    if (busy) return;
     setError(null);
     if (!current) return setError('Enter your current passphrase.');
     if (next.length < 10) return setError('The new passphrase needs at least 10 characters.');

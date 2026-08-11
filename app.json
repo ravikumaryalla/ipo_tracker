@@ -38,7 +38,8 @@
           "color": "#070B14"
         }
       ],
-      "expo-splash-screen"
+      "expo-splash-screen",
+      "react-native-libsodium"
     ],
     "extra": {
       "eas": {

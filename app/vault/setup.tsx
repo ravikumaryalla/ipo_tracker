@@ -61,6 +61,9 @@ export default function VaultSetup() {
   const strength = strengthOf(passphrase);
 
   async function onCreate() {
+    // The confirm field's "go" key can fire while a derivation is already
+    // running; a second concurrent Argon2 run would double the stall.
+    if (busy) return;
     setError(null);
     if (passphrase.length < 10) return setError('Use at least 10 characters.');
     if (passphrase !== confirm) return setError('The two passphrases do not match.');

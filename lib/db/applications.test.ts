@@ -36,6 +36,7 @@ function row(patch: Partial<ApplicationPnl>): ApplicationPnl {
     amount_currently_blocked: 0,
     realised_pnl: 0,
     unrealised_pnl: 0,
+    kfintech_company_id: null,
     ...patch,
   };
 }
