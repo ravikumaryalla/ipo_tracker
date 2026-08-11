@@ -137,7 +137,7 @@ export default function VaultUnlock() {
           {biometricsEnabled && support?.enrolled && (
             <Button
               title={`Use ${support.label.toLowerCase()}`}
-              icon="fingerprint"
+              icon={support.label === 'Device passcode' ? 'lock' : 'fingerprint'}
               variant="secondary"
               onPress={tryBiometrics}
               disabled={busy}

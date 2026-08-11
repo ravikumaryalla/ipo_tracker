@@ -44,18 +44,32 @@ export type BiometricSupport = {
 export async function getBiometricSupport(): Promise<BiometricSupport> {
   if (isWeb) return { available: false, enrolled: false, label: 'Biometrics' };
 
-  const [hasHardware, enrolled, types] = await Promise.all([
+  const [hasHardware, enrolled, types, enrolledLevel] = await Promise.all([
     LocalAuthentication.hasHardwareAsync(),
     LocalAuthentication.isEnrolledAsync(),
     LocalAuthentication.supportedAuthenticationTypesAsync(),
+    LocalAuthentication.getEnrolledLevelAsync(),
   ]);
+
+  // hasHardwareAsync/isEnrolledAsync only ever report a fingerprint/face
+  // scanner — a device locked with just a PIN or pattern (no biometric
+  // sensor at all) fails both, even though authenticateAsync() already
+  // happily prompts for that PIN via its device-credential fallback. Without
+  // this, PIN-only devices could never enable or use this unlock method at
+  // all, not even as the "Device passcode" case the label logic below
+  // already anticipates.
+  const hasDeviceCredential = enrolledLevel >= LocalAuthentication.SecurityLevel.SECRET;
 
   let label: BiometricSupport['label'] = 'Biometrics';
   if (types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) label = 'Face';
   else if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) label = 'Fingerprint';
   else if (!hasHardware) label = 'Device passcode';
 
-  return { available: hasHardware, enrolled, label };
+  return {
+    available: hasHardware || hasDeviceCredential,
+    enrolled: enrolled || hasDeviceCredential,
+    label,
+  };
 }
 
 /** Prompt for fingerprint/face. Falls back to the device PIN if biometrics fail. */

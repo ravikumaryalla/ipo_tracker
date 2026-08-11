@@ -112,8 +112,8 @@ export default function Settings() {
               {Platform.OS === 'web'
                 ? BIOMETRICS_WEB_MESSAGE
                 : support?.enrolled
-                  ? 'Stores your vault key in the Android Keystore, released only after a successful scan.'
-                  : 'Set up a fingerprint or face unlock on your phone first.'}
+                  ? 'Stores your vault key in the Android Keystore, released only after you unlock your device.'
+                  : 'Set up a fingerprint, face, or PIN/pattern lock on your phone first.'}
             </Text>
           </View>
           <Switch
