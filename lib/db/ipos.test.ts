@@ -26,6 +26,7 @@ function ipo(patch: Partial<Ipo>): Ipo {
     current_price: null,
     registrar: null,
     registrar_url: null,
+    kfintech_company_id: null,
     source: 'MANUAL',
     created_by: null,
     last_synced_at: null,
@@ -80,7 +81,7 @@ function gmpAt(observed_at: string, gmp: number | null): IpoGmp {
   return {
     id: `g-${observed_at}`,
     ipo_id: 'i1',
-    provider: 'CHITTORGARH',
+    provider: 'IPOWATCH',
     provider_slug: 'test-co-ipo',
     company_name: 'Test Co',
     open_date: '2026-08-10',

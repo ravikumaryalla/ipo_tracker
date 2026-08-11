@@ -124,7 +124,7 @@ export default function IpoDetail() {
           */}
           <Text style={styles.caption}>
             Unofficial grey-market estimate, not exchange data. It is not a prediction of the
-            listing price. Source: Chittorgarh / InvestorGain.
+            listing price. Source: ipowatch.in.
           </Text>
         </Card>
       )}

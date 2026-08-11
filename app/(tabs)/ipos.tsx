@@ -62,7 +62,7 @@ export default function IposTab() {
     // run where only those succeeded would otherwise suppress a genuine "this
     // list is days old" warning.
     const listRows = sync.data?.filter(
-      (row) => row.provider !== 'CHITTORGARH_GMP' && row.provider !== 'CRON',
+      (row) => row.provider !== 'IPOWATCH_GMP' && row.provider !== 'CRON',
     );
     const lastOk = listRows?.filter((row) => row.ok).sort((a, b) => b.ran_at.localeCompare(a.ran_at))[0];
     if (!lastOk) {

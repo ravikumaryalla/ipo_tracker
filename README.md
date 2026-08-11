@@ -72,8 +72,8 @@ jobs rather than one because a cron expression has a single minute field and tho
 differ in their minute. The service-role key lives only in the database and in Supabase
 secrets — never in `.env`, never in the app bundle.
 
-The sync pulls three sources in order — NSE, BSE, then Chittorgarh — each independent of
-the next, plus grey market premium readings into `ipo_gmp`. Chittorgarh runs last because
+The sync pulls three sources in order — NSE, BSE, then ipowatch.in — each independent of
+the next, plus grey market premium readings into `ipo_gmp`. ipowatch.in runs last because
 it is the only source that supplies a listing date.
 
 > **Expect this to break eventually.** None of these sites publishes a documented IPO API;
@@ -159,7 +159,7 @@ lib/
 components/               SecretField, AccountForm, ui primitives
 supabase/
   migrations/             schema, RLS, P&L view, broker seed, GMP, cron
-  functions/sync-ipos/    NSE → BSE → Chittorgarh chain, plus GMP
+  functions/sync-ipos/    NSE → BSE → ipowatch.in chain, plus GMP
     parse.ts              pure parsing + matching — the tested part
 ```
 

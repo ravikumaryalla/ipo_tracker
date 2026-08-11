@@ -33,15 +33,20 @@ import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 
 import {
   buildIpoIndexes,
-  chittorgarhRow,
-  financialYearsToFetch,
   type GmpReading,
-  gmpRow,
   type IpoRecord,
+  ipowatchGmpRow,
+  ipowatchIpoRow,
+  type IpowatchListingRow,
   normalizeName,
   parseDate,
+  parseIpowatchGmpTable,
+  parseIpowatchListingTable,
+  parseKfintechCompanies,
   parsePriceBand,
   resolveIpoId,
+  resolveKfintechCompanyMatch,
+  slugFromPath,
   statusFor,
   toNumber,
 } from './parse.ts';
@@ -192,23 +197,51 @@ const fetchBse: Provider = async () => {
 };
 
 // ---------------------------------------------------------------------------
-// provider: Chittorgarh
+// provider: ipowatch.in
 //
-// Their front-end calls this JSON endpoint directly, so no HTML parsing and no
-// DOM library is needed. Note the GMP feed further down lives on
-// investorgain.com — same publisher, different host, and the path prefixes are
-// NOT interchangeable (chittorgarh 404s on /cloud/v2/, investorgain 404s on
-// /cloud/). That is not a typo.
+// No public API; these are the same two server-rendered pages a browser
+// loads. Fetched as plain HTML and walked with a regex table parser (see
+// parse.ts) — confirmed the tables need no client-side JS to be complete: the
+// listing page's own DataTables footer reports "Showing N of N entries" for
+// every row, so a plain fetch already carries the full table.
+//
+// The listing-date page is fetched separately from the GMP page purely to
+// attach listing_date and exchange symbols by company name; a failure there
+// degrades to null listing_date/symbols rather than failing the whole
+// provider, since the GMP page alone is enough to keep the IPO list current.
 //
 // Runs last of the three, so its richer fields — listing_date above all, which
 // neither exchange supplies — win the upsert.
 // ---------------------------------------------------------------------------
 
-const CHITTORGARH_REPORT = 'https://webnodejs.chittorgarh.com/cloud/report/data-read/82/1';
+const IPOWATCH_GMP_URL = 'https://ipowatch.in/ipo-grey-market-premium-latest-ipo-gmp/';
+const IPOWATCH_LISTING_URL = 'https://ipowatch.in/new-ipo-listing-today-ipo-listing-date/';
 
-const fetchChittorgarh: Provider = async (prior) => {
+async function fetchIpowatchListingByName(): Promise<Map<string, IpowatchListingRow>> {
+  try {
+    const res = await fetch(IPOWATCH_LISTING_URL, {
+      headers: { ...BROWSER_HEADERS, Accept: 'text/html' },
+    });
+    if (!res.ok) throw new Error(`ipowatch listing page responded ${res.status}`);
+    const html = await res.text();
+
+    // Mainboard and SME ship as two separate TablePress tables.
+    const rows = [
+      ...parseIpowatchListingTable(html, 'tablepress-30'),
+      ...parseIpowatchListingTable(html, 'tablepress-31'),
+    ];
+
+    const byName = new Map<string, IpowatchListingRow>();
+    for (const row of rows) byName.set(normalizeName(row.company_name), row);
+    return byName;
+  } catch {
+    return new Map();
+  }
+}
+
+const fetchIpowatch: Provider = async (prior) => {
   // Reuse whatever symbol NSE or BSE already chose for the same issue this run.
-  // 16 of 30 live issues carry no exchange identifier at all, so without this a
+  // Most live issues carry no exchange identifier at all, so without this a
   // synthesised symbol would create a duplicate `ipos` row for each of them.
   const priorSymbols = new Map<string, string>();
   for (const record of prior) {
@@ -217,36 +250,31 @@ const fetchChittorgarh: Provider = async (prior) => {
   }
 
   const today = new Date().toISOString().slice(0, 10);
-  const [, month] = today.split('-');
+
+  const [gmpRes, listingByName] = await Promise.all([
+    fetch(IPOWATCH_GMP_URL, { headers: { ...BROWSER_HEADERS, Accept: 'text/html' } }),
+    fetchIpowatchListingByName(),
+  ]);
+  if (!gmpRes.ok) throw new Error(`ipowatch GMP page responded ${gmpRes.status}`);
+  const gmpHtml = await gmpRes.text();
+  const gmpRows = parseIpowatchGmpTable(gmpHtml);
+
   const byKey = new Map<string, IpoRecord>();
   const slugIndex = new Map<string, { symbol: string; open_date: string | null }>();
 
-  for (const fy of financialYearsToFetch(today)) {
-    const [year] = fy.split('-');
-    const res = await fetch(`${CHITTORGARH_REPORT}/${Number(month)}/${year}/${fy}/0/all`, {
-      headers: BROWSER_HEADERS,
-    });
-    if (!res.ok) continue;
+  for (const row of gmpRows) {
+    const record = ipowatchIpoRow(row, listingByName, priorSymbols, today);
+    if (!record) continue;
 
-    const body = await res.json().catch(() => null);
-    const rows: unknown[] = body?.reportTableData ?? [];
+    byKey.set(`${record.symbol}|${record.open_date}`, record);
 
-    for (const raw of rows) {
-      const row = raw as Record<string, unknown>;
-      const record = chittorgarhRow(row, priorSymbols, today);
-      if (!record) continue;
-
-      // Two financial years can both list a March issue; keep one.
-      byKey.set(`${record.symbol}|${record.open_date}`, record);
-
-      const slug = String(row['~URLRewrite_Folder_Name'] ?? '').trim().toLowerCase();
-      if (slug) slugIndex.set(slug, { symbol: record.symbol, open_date: record.open_date });
-    }
+    const slug = slugFromPath(row.url);
+    if (slug) slugIndex.set(slug, { symbol: record.symbol, open_date: record.open_date });
   }
 
   const records = [...byKey.values()];
-  if (records.length === 0) throw new Error('Chittorgarh returned no usable rows');
-  return { provider: 'CHITTORGARH', records, slugIndex };
+  if (records.length === 0) throw new Error('ipowatch returned no usable rows');
+  return { provider: 'IPOWATCH', records, slugIndex };
 };
 
 // ---------------------------------------------------------------------------
@@ -276,27 +304,19 @@ async function upsert(client: SupabaseClient, records: IpoRecord[]): Promise<num
 // product, GMP is a garnish.
 // ---------------------------------------------------------------------------
 
-const GMP_REPORT = 'https://webnodejs.investorgain.com/cloud/v2/report/data-read/331/1';
-
 async function fetchGmp(): Promise<GmpReading[]> {
   const runIso = new Date().toISOString();
-  const today = runIso.slice(0, 10);
-  const [year, month] = today.split('-');
-  const fy = financialYearsToFetch(today)[0];
 
-  const res = await fetch(`${GMP_REPORT}/${Number(month)}/${year}/${fy}/0/all`, {
-    headers: BROWSER_HEADERS,
-  });
-  if (!res.ok) throw new Error(`GMP feed responded ${res.status}`);
-
-  const body = await res.json().catch(() => null);
-  const rows: unknown[] = body?.reportTableData ?? [];
+  const res = await fetch(IPOWATCH_GMP_URL, { headers: { ...BROWSER_HEADERS, Accept: 'text/html' } });
+  if (!res.ok) throw new Error(`ipowatch GMP page responded ${res.status}`);
+  const html = await res.text();
+  const rows = parseIpowatchGmpTable(html);
 
   const readings = rows
-    .map((raw) => gmpRow(raw as Record<string, unknown>, runIso))
+    .map((row) => ipowatchGmpRow(row, runIso))
     .filter((r): r is GmpReading => r !== null);
 
-  if (readings.length === 0) throw new Error('GMP feed returned no usable rows');
+  if (readings.length === 0) throw new Error('ipowatch GMP table returned no usable rows');
   return readings;
 }
 
@@ -377,6 +397,58 @@ async function backfillGmp(
 }
 
 // ---------------------------------------------------------------------------
+// KFintech allotment-status company list
+//
+// Public data only — no PAN involved. This just resolves which `ipos` rows
+// are KFintech-registered issues and records the internal `clientId` their
+// allotment-status API needs, so the app can query allotment status on-device
+// without rediscovering that id per check. See lib/registrars/kfintech.ts for
+// the PAN-bearing query itself, which never runs here.
+// ---------------------------------------------------------------------------
+
+const KFINTECH_BASE = 'https://ipostatus.kfintech.com';
+
+async function fetchKfintechCompanies() {
+  const homepage = await fetch(`${KFINTECH_BASE}/`, { headers: BROWSER_HEADERS });
+  if (!homepage.ok) throw new Error(`KFintech homepage responded ${homepage.status}`);
+  const html = await homepage.text();
+
+  const scriptMatch = html.match(/src="(\/static\/js\/main\.[a-z0-9]+\.js)"/);
+  if (!scriptMatch) throw new Error('KFintech homepage did not reference a main.<hash>.js bundle');
+
+  const bundleRes = await fetch(`${KFINTECH_BASE}${scriptMatch[1]}`, { headers: BROWSER_HEADERS });
+  if (!bundleRes.ok) throw new Error(`KFintech bundle responded ${bundleRes.status}`);
+  const bundle = await bundleRes.text();
+
+  const companies = parseKfintechCompanies(bundle);
+  if (companies.length === 0) throw new Error('KFintech bundle yielded no company entries');
+  return companies;
+}
+
+async function syncKfintechCompanies(client: SupabaseClient): Promise<number> {
+  const companies = await fetchKfintechCompanies();
+  const indexes = await loadIpoIndexes(client);
+
+  let matched = 0;
+  for (const company of companies) {
+    const id = resolveKfintechCompanyMatch(company, indexes);
+    if (!id) continue;
+    const { error } = await client
+      .from('ipos')
+      .update({
+        registrar: 'KFINTECH',
+        registrar_url: `${KFINTECH_BASE}/`,
+        kfintech_company_id: company.clientId,
+      })
+      .eq('id', id)
+      .is('created_by', null);
+    if (!error) matched += 1;
+  }
+
+  return matched;
+}
+
+// ---------------------------------------------------------------------------
 // entrypoint
 // ---------------------------------------------------------------------------
 
@@ -389,12 +461,12 @@ Deno.serve(async () => {
   );
 
   // Named, rather than derived from function identity — with three providers,
-  // `provider === fetchNse ? 'NSE' : 'BSE'` would log every Chittorgarh failure
-  // as BSE and make the app's staleness banner blame the wrong scraper.
+  // `provider === fetchNse ? 'NSE' : 'BSE'` would log every ipowatch failure as
+  // BSE and make the app's staleness banner blame the wrong scraper.
   const providers: readonly (readonly [string, Provider])[] = [
     ['NSE', fetchNse],
     ['BSE', fetchBse],
-    ['CHITTORGARH', fetchChittorgarh],
+    ['IPOWATCH', fetchIpowatch],
   ];
 
   const outcomes: Outcome[] = [];
@@ -425,7 +497,7 @@ Deno.serve(async () => {
   // never turn a healthy IPO sync into an HTTP 502.
   const anyOk = outcomes.some((o) => o.ok);
 
-  const gmp: Outcome = { provider: 'CHITTORGARH_GMP', ok: false, rows: 0 };
+  const gmp: Outcome = { provider: 'IPOWATCH_GMP', ok: false, rows: 0 };
   try {
     const readings = await fetchGmp();
     gmp.rows = await writeGmp(client, readings, slugIndex);
@@ -440,6 +512,21 @@ Deno.serve(async () => {
     ok: gmp.ok,
     rows_upserted: gmp.rows,
     message: gmp.message ?? null,
+  });
+
+  const kfintech: Outcome = { provider: 'KFINTECH_MATCH', ok: false, rows: 0 };
+  try {
+    kfintech.rows = await syncKfintechCompanies(client);
+    kfintech.ok = true;
+  } catch (e) {
+    kfintech.message = e instanceof Error ? e.message : String(e);
+  }
+  outcomes.push(kfintech);
+  await client.from('sync_log').insert({
+    provider: kfintech.provider,
+    ok: kfintech.ok,
+    rows_upserted: kfintech.rows,
+    message: kfintech.message ?? null,
   });
 
   // Roll IPOs forward through their lifecycle regardless of whether the fetch

@@ -6,7 +6,7 @@
  * imports `jsr:@supabase/supabase-js` and calls `Deno.serve`, neither of which
  * Node can load, so anything left in that file is untestable by construction.
  *
- * The Chittorgarh work roughly tripled the amount of parsing, and the matching
+ * The ipowatch.in work roughly tripled the amount of parsing, and the matching
  * ladder in `resolveIpoId` is the single place where a bug attaches a grey
  * market chart to the wrong company — which is worse than showing nothing. So
  * it lives here, takes plain Maps rather than a database client, and is covered
@@ -25,7 +25,7 @@ export type IpoRecord = {
   status: 'UPCOMING' | 'OPEN' | 'CLOSED' | 'LISTED';
   open_date: string | null;
   close_date: string | null;
-  /** Only Chittorgarh supplies this; NSE and BSE never do. */
+  /** Only the ipowatch listing-date table supplies this; NSE and BSE never do. */
   listing_date: string | null;
   price_band_min: number | null;
   price_band_max: number | null;
@@ -198,47 +198,199 @@ export function normalizeName(name: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// GMP cells
+// ipowatch.in HTML tables
+//
+// ipowatch has no public API; these read the same server-rendered <table>
+// markup a browser does. A regex walk is enough — the listing page's own
+// "Showing N of N entries" footer confirms every row we need is present in
+// the plain HTML with no client-side JS required to see the rest of it, so
+// there is no pagination to defeat and no need for a DOM library just to walk
+// two flat tables.
 // ---------------------------------------------------------------------------
 
-/**
- * "&#8377;<b>6</b> (5.22%)<br><small>…</small>" → { gmp: 6, percent: 5.22 }
- *
- * A dealer quoting nothing renders as "--", which must stay null rather than
- * becoming 0 — "no quote" and "no premium" are different claims, and only one
- * of them is a number. When there is no quote the percentage the feed reports
- * alongside it (always "0.00%") is meaningless, so it is dropped too.
- */
-export function parseGmp(cell: unknown): { gmp: number | null; percent: number | null } {
-  const head = decodeEntities(cell).split(/<br\s*\/?>/i)[0];
-  const text = stripTags(head).replace(/₹/g, '').trim();
+type HtmlRow = { cells: string[]; hrefs: (string | null)[] };
 
-  const value = text.match(/^(-?\d+(?:\.\d+)?)/);
-  if (!value) return { gmp: null, percent: null };
+function extractHtmlRows(tableHtml: string): HtmlRow[] {
+  const rows: HtmlRow[] = [];
+  const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch: RegExpExecArray | null;
+  while ((rowMatch = rowRe.exec(tableHtml))) {
+    const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    const cells: string[] = [];
+    const hrefs: (string | null)[] = [];
+    let cellMatch: RegExpExecArray | null;
+    while ((cellMatch = cellRe.exec(rowMatch[1]))) {
+      cells.push(decodeEntities(stripTags(cellMatch[1])).trim());
+      const href = cellMatch[1].match(/href="([^"]*)"/i);
+      hrefs.push(href ? href[1] : null);
+    }
+    if (cells.length > 0) rows.push({ cells, hrefs });
+  }
+  return rows;
+}
 
-  const percent = text.match(/\((-?\d+(?:\.\d+)?)\s*%\)/);
-  return { gmp: Number(value[1]), percent: percent ? Number(percent[1]) : null };
+/** Find a `<table id="…">…</table>` block (TablePress tables carry a stable id). */
+function tableById(html: string, id: string): string | null {
+  const m = html.match(new RegExp(`<table[^>]*\\bid="${id}"[^>]*>([\\s\\S]*?)<\\/table>`, 'i'));
+  return m ? m[1] : null;
 }
 
 /**
- * The feed stamps readings as "9-Aug 23:34" — no year, and in IST.
+ * Find the GMP table by content rather than position or id — the GMP page
+ * carries a second, unrelated table and neither one has an id or class, so
+ * "the table whose header row mentions both IPO Name and IPO GMP" is the only
+ * anchor that will still work after ipowatch's next redesign.
+ */
+function findIpowatchGmpTable(html: string): string | null {
+  const tableRe = /<table[^>]*>([\s\S]*?)<\/table>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = tableRe.exec(html))) {
+    if (/IPO Name/i.test(m[1]) && /IPO GMP/i.test(m[1])) return m[1];
+  }
+  return null;
+}
+
+export type IpowatchGmpRow = {
+  company_name: string;
+  url: string | null;
+  gmp_cell: string;
+  price_band_cell: string;
+  est_listing_cell: string;
+  date_cell: string;
+  type_cell: string;
+  last_updated_cell: string;
+};
+
+/**
+ * ipowatch's live GMP table → one row per IPO. Columns are IPO Name | IPO GMP*
+ * | Trend | Price Band | Est. Listing | Date | Type | Status | Last Updated.
+ * Trend (an emoji) is dropped, and Status is recomputed via statusFor instead
+ * of trusted from the source, since the source's own status text can lag.
+ */
+export function parseIpowatchGmpTable(html: string): IpowatchGmpRow[] {
+  const table = findIpowatchGmpTable(html);
+  if (!table) return [];
+
+  return extractHtmlRows(table)
+    .filter((row) => row.cells.length >= 9 && row.cells[0] !== 'IPO Name')
+    .map((row) => ({
+      company_name: row.cells[0],
+      url: row.hrefs[0],
+      gmp_cell: row.cells[1],
+      price_band_cell: row.cells[3],
+      est_listing_cell: row.cells[4],
+      date_cell: row.cells[5],
+      type_cell: row.cells[6],
+      last_updated_cell: row.cells[8],
+    }));
+}
+
+export type IpowatchListingRow = {
+  company_name: string;
+  url: string | null;
+  listing_date_cell: string;
+  bse_symbol: string;
+  nse_symbol: string;
+};
+
+/**
+ * ipowatch's listing-date table → one row per IPO. Mainboard and SME ship as
+ * two separate TablePress tables (ids `tablepress-30` / `tablepress-31` as of
+ * 2026-08 — the caller fetches both). Columns: IPO | IPO Date | Listing Date |
+ * ISIN | BSE Symbol | NSE Symbol.
+ */
+export function parseIpowatchListingTable(html: string, tableId: string): IpowatchListingRow[] {
+  const table = tableById(html, tableId);
+  if (!table) return [];
+
+  return extractHtmlRows(table)
+    .filter((row) => row.cells.length >= 6 && row.cells[0] !== 'IPO')
+    .map((row) => ({
+      company_name: row.cells[0],
+      url: row.hrefs[0],
+      listing_date_cell: row.cells[2],
+      bse_symbol: row.cells[4],
+      nse_symbol: row.cells[5],
+    }));
+}
+
+/** "19 August 2026" → "2026-08-19"; junk → null. */
+export function parseIpowatchFullDate(value: string): string | null {
+  const m = value.trim().match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
+  if (!m) return null;
+  const month = MONTHS.indexOf(m[2].toLowerCase().slice(0, 3));
+  if (month < 0) return null;
+  return `${m[3]}-${String(month + 1).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+}
+
+/**
+ * "12-14 August" → { open: 2026-08-12, close: 2026-08-14 }.
  *
- * The missing year is inferred from the run date. The rollover guard matters:
- * without it, every December reading fetched on 1 January would be filed under
- * the wrong year, and the unique index would happily accept the duplicates.
+ * Ranges that cross a month boundary name only the end month (e.g.
+ * "31-7 August" means 31 July to 7 August) — the start day is assigned to the
+ * previous month whenever it is numerically larger than the end day, since
+ * within one calendar month an open date always precedes its close date.
+ */
+export function parseIpowatchDateRange(
+  cell: string,
+  today: string,
+): { open: string | null; close: string | null } {
+  const m = cell.trim().match(/^(\d{1,2})-(\d{1,2})\s+([A-Za-z]+)$/);
+  if (!m) return { open: null, close: null };
+
+  const endMonth = MONTHS.indexOf(m[3].toLowerCase().slice(0, 3));
+  if (endMonth < 0) return { open: null, close: null };
+
+  const day1 = Number(m[1]);
+  const day2 = Number(m[2]);
+  const startMonth = day1 > day2 ? (endMonth + 11) % 12 : endMonth;
+
+  const todayYear = Number(today.slice(0, 4));
+  const todayMonth = Number(today.slice(5, 7)) - 1;
+  // No year is given; infer it from the run date, with the same December/
+  // January rollover guard ipowatchObservedAtFrom uses below.
+  let closeYear = todayYear;
+  if (endMonth === 0 && todayMonth === 11) closeYear += 1;
+  if (endMonth === 11 && todayMonth === 0) closeYear -= 1;
+  let openYear = closeYear;
+  if (startMonth === 11 && endMonth === 0) openYear -= 1;
+
+  const open = `${openYear}-${String(startMonth + 1).padStart(2, '0')}-${String(day1).padStart(2, '0')}`;
+  const close = `${closeYear}-${String(endMonth + 1).padStart(2, '0')}-${String(day2).padStart(2, '0')}`;
+  return { open, close };
+}
+
+/** "₹53" → 53; "₹0" → 0; "₹-" → null (no quote, distinct from a real zero). */
+export function parseIpowatchAmount(cell: string): number | null {
+  const text = cell.replace(/₹/g, '').replace(/,/g, '').trim();
+  if (!/\d/.test(text)) return null;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** "₹338 (18.60%)" → 18.6; no parenthesised percent → null. */
+export function parseIpowatchPercent(cell: string): number | null {
+  const m = cell.match(/\((-?\d+(?:\.\d+)?)\s*%\)/);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * ipowatch stamps GMP rows "11 Aug, 07:45" — no year, and in IST. Same
+ * missing-year inference and December/January rollover guard the old
+ * Chittorgarh feed needed, just a different literal format (comma before the
+ * time; already free of markup, since the table extractor strips it).
  *
  * Falls back to the run timestamp rather than null, because observed_at is NOT
  * NULL and is part of the idempotency key — a null would break dedupe entirely.
  */
-export function observedAtFrom(cell: unknown, runIso: string): string {
+export function ipowatchObservedAtFrom(cell: string, runIso: string): string {
   const run = new Date(runIso);
   if (Number.isNaN(run.getTime())) return new Date().toISOString();
 
-  const text = stripTags(decodeEntities(cell));
-  const m = text.match(/^(\d{1,2})-([A-Za-z]{3})\s+(\d{1,2}):(\d{2})$/);
+  const m = cell.trim().match(/^(\d{1,2})\s+([A-Za-z]{3,}),?\s*(\d{1,2}):(\d{2})$/);
   if (!m) return run.toISOString();
 
-  const month = MONTHS.indexOf(m[2].toLowerCase());
+  const month = MONTHS.indexOf(m[2].toLowerCase().slice(0, 3));
   if (month < 0) return run.toISOString();
 
   let year = run.getUTCFullYear();
@@ -254,90 +406,84 @@ export function observedAtFrom(cell: unknown, runIso: string): string {
 // row mapping
 // ---------------------------------------------------------------------------
 
-function text(row: Record<string, unknown>, key: string): string {
-  const value = row[key];
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-/** "2026-08-12T00:00:00.000Z" → "2026-08-12"; "" → null. */
-function isoDay(value: string): string | null {
-  return /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : null;
-}
-
 /**
- * Chittorgarh report 82 row → IpoRecord.
+ * ipowatch GMP-table row → IpoRecord. `listingByName` supplies listing_date
+ * and exchange symbols from the separate listing-date table, joined by
+ * normalizeName since the two pages share no other key; a company not yet on
+ * that page just gets a null listing_date until it shows up there on a later
+ * run.
  *
  * `priorSymbols` maps `${normalizeName}|${open_date}` to the symbol NSE or BSE
  * already used for that issue *in this same run*. Reusing it is what stops
- * Chittorgarh creating a second `ipos` row for a company the exchanges just
- * wrote under their own symbol.
+ * this provider creating a second `ipos` row for a company an exchange just
+ * wrote under its own symbol.
  */
-export function chittorgarhRow(
-  row: Record<string, unknown>,
+export function ipowatchIpoRow(
+  row: IpowatchGmpRow,
+  listingByName: Map<string, IpowatchListingRow>,
   priorSymbols: Map<string, string> = new Map(),
-  today?: string,
+  today = new Date().toISOString().slice(0, 10),
 ): IpoRecord | null {
-  const company = decodeEntities(stripTags(row.Company)).trim();
-  const open = isoDay(text(row, '~issue_open_date_plan')) ?? parseDate(row['Opening Date']);
+  const company = decodeEntities(row.company_name).trim();
+  if (!company) return null;
 
+  const { open, close } = parseIpowatchDateRange(row.date_cell, today);
   // Mirrors fetchNse's `if (!symbol || !name) continue` — a row we cannot key
   // is worse than a missing row, because the upsert would duplicate it forever.
-  if (!company || !open) return null;
+  if (!open) return null;
 
-  const close = isoDay(text(row, '~IssueCloseDate')) ?? parseDate(row['Closing Date']);
-  const slug = text(row, '~URLRewrite_Folder_Name');
-
-  const nse = text(row, '~nse_symbol').toUpperCase();
-  const bse = text(row, '~bse_script_code').toUpperCase();
+  const listing = listingByName.get(normalizeName(company));
+  const nse = (listing?.nse_symbol ?? '').toUpperCase();
+  const bse = (listing?.bse_symbol ?? '').toUpperCase();
+  const slug = slugFromPath(row.url) ?? '';
   const prior = priorSymbols.get(`${normalizeName(company)}|${open}`);
   const symbol = nse || bse || prior || symbolFromSlug(slug);
   if (!symbol) return null;
 
-  const listedAt = text(row, 'Listing at').toUpperCase();
-  const [min, max] = parsePriceBand(row['Issue Price (Rs.)']);
+  const type = row.type_cell.toUpperCase();
+  const [min, max] = parsePriceBand(row.price_band_cell);
 
   return {
     symbol,
     company_name: company,
-    exchange: listedAt.includes('NSE') ? 'NSE' : listedAt.includes('BSE') ? 'BSE' : 'NSE',
-    segment: text(row, 'Issue Category').toUpperCase() === 'SME' ? 'SME' : 'MAINBOARD',
+    exchange: type.includes('BSE') ? 'BSE' : 'NSE',
+    segment: type.includes('SME') ? 'SME' : 'MAINBOARD',
     status: statusFor(open, close, today),
     open_date: open,
     close_date: close,
-    listing_date: isoDay(text(row, '~ListingDate')),
+    listing_date: listing ? parseIpowatchFullDate(listing.listing_date_cell) : null,
     price_band_min: min,
     price_band_max: max,
-    // Report 82 does not carry a lot size. The GMP feed does, but that belongs
-    // to the reading, not the issue.
+    // The GMP table does not carry a lot size or issue size; per-IPO detail
+    // pages do, but scraping ~30-40 of those per run is not worth it.
     lot_size: null,
-    issue_size_cr: toNumber(row['Issue Amount (Rs.cr.)']),
-    source: 'CHITTORGARH',
+    issue_size_cr: null,
+    source: 'IPOWATCH',
   };
 }
 
-/** InvestorGain report 331 row → GmpReading. */
-export function gmpRow(row: Record<string, unknown>, runIso: string): GmpReading | null {
-  const path = text(row, '~urlrewrite_folder_name');
-  const slug = slugFromPath(path);
-  const company = decodeEntities(text(row, '~ipo_name')).trim();
+/** ipowatch GMP-table row → GmpReading. */
+export function ipowatchGmpRow(row: IpowatchGmpRow, runIso: string): GmpReading | null {
+  const slug = slugFromPath(row.url);
+  const company = decodeEntities(row.company_name).trim();
   if (!slug || !company) return null;
 
-  const parsed = parseGmp(row.GMP);
-  // The feed computes this itself; prefer it over our regex and fall back only
-  // when it is absent.
-  const reported = toNumber(row['~gmp_percent_calc']);
+  const { open } = parseIpowatchDateRange(row.date_cell, runIso.slice(0, 10));
+  const [, priceBandMax] = parsePriceBand(row.price_band_cell);
 
   return {
-    provider: 'CHITTORGARH',
+    provider: 'IPOWATCH',
     provider_slug: slug,
     company_name: company,
-    open_date: isoDay(text(row, '~Srt_Open')),
-    observed_at: observedAtFrom(row['Updated-On'], runIso),
-    gmp: parsed.gmp,
-    gmp_percent: parsed.gmp === null ? null : (reported ?? parsed.percent),
-    price: toNumber(row['Price (₹)']),
-    sub_times: toNumber(row.Sub),
-    source_url: path ? `https://www.investorgain.com${path}` : null,
+    open_date: open,
+    observed_at: ipowatchObservedAtFrom(row.last_updated_cell, runIso),
+    gmp: parseIpowatchAmount(row.gmp_cell),
+    gmp_percent: parseIpowatchPercent(row.est_listing_cell),
+    price: priceBandMax,
+    // The GMP table carries no subscription figures.
+    sub_times: null,
+    // ipowatch's own anchors are already absolute (https://ipowatch.in/…-ipo/).
+    source_url: row.url,
   };
 }
 
@@ -392,18 +538,16 @@ function daysApart(a: string | null, b: string | null): number {
  * one company's grey market on another company's page, and nothing will alert
  * anyone.
  *
- * Note on the slug rung: it only fires when the Chittorgarh *list* leg
- * succeeded in the same run, because that is what populates `slugIndex`. The
- * GMP feed itself carries no exchange symbol at all (verified against the live
- * payload — there is no ~nse_symbol field), so there is no symbol-based
- * fallback available here; name matching is the safety net.
+ * Note on the slug rung: it only fires when the ipowatch *list* leg succeeded
+ * in the same run, because that is what populates `slugIndex`. Name matching
+ * is the safety net for every reading that misses it.
  */
 export function resolveIpoId(
   reading: GmpReading,
   slugIndex: Map<string, { symbol: string; open_date: string | null }>,
   indexes: IpoIndexes,
 ): string | null {
-  // 1. Slug → the symbol Chittorgarh just upserted → the row itself.
+  // 1. Slug → the symbol the ipowatch list leg just upserted → the row itself.
   const viaSlug = slugIndex.get(reading.provider_slug);
   if (viaSlug) {
     const id = indexes.bySymbolOpen.get(`${viaSlug.symbol.toUpperCase()}|${viaSlug.open_date}`);
@@ -428,30 +572,67 @@ export function resolveIpoId(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// KFintech allotment-status company list
+// ---------------------------------------------------------------------------
+
+/** One entry from KFintech's "Select IPO" dropdown. */
+export type KfintechCompany = { clientId: string; name: string };
+
 /**
- * The financial year segment the reports are keyed by: April–March, written
- * "2026-27".
+ * KFintech's allotment-status site (ipostatus.kfintech.com) has no company-list
+ * API — the dropdown is populated from a plain JSON array baked into their
+ * React bundle at build time, e.g. `const rf=JSON.parse('[{"clientId":"...",
+ * "name":"..."}, ...]')`.
+ *
+ * The anchor searched for is the JSON content itself (`[{"clientId"`), not the
+ * `rf` variable name, because minifier-assigned identifiers are not stable
+ * across their redeploys — the JSON shape is the only part of this we can rely
+ * on holding still. If KFintech changes that shape too, this returns an empty
+ * list rather than throwing, so one broken scrape degrades to "no matches this
+ * run" instead of taking down the rest of the sync.
  */
-export function financialYear(iso: string): string {
-  const [year, month] = iso.split('-').map(Number);
-  const start = month >= 4 ? year : year - 1;
-  return `${start}-${String((start + 1) % 100).padStart(2, '0')}`;
+export function parseKfintechCompanies(bundleSource: string): KfintechCompany[] {
+  const jsonStart = bundleSource.indexOf('[{"clientId"');
+  if (jsonStart === -1) return [];
+  const jsonEnd = bundleSource.indexOf("')", jsonStart);
+  if (jsonEnd === -1) return [];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bundleSource.slice(jsonStart, jsonEnd));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .filter(
+      (row): row is { clientId: unknown; name: unknown } =>
+        !!row && typeof row === 'object' && 'clientId' in row && 'name' in row,
+    )
+    .map((row) => ({ clientId: String(row.clientId), name: String(row.name) }))
+    .filter((row) => row.clientId && row.name);
 }
 
 /**
- * Which financial years to fetch on a given day.
+ * Match one KFintech dropdown entry to an `ipos` row.
  *
- * On 1 April the report stops returning the previous year's issues, so an IPO
- * that opened in March vanishes mid-lifecycle. Fetching both years through the
- * first quarter keeps recently-listed issues visible; no test will catch this
- * because it only misbehaves for one quarter a year.
+ * KFintech's list carries no open date and no exchange symbol, and it mixes
+ * equity IPOs with NCDs/bonds we never track — so name is the only signal
+ * available. Same refusal rule as `resolveIpoId`: an unmatched or ambiguous
+ * name is left alone rather than guessed at, since a wrong match would show
+ * one company's allotment status on another's application.
  */
-export function financialYearsToFetch(iso: string): string[] {
-  const current = financialYear(iso);
-  const month = Number(iso.split('-')[1]);
-  if (month >= 4 && month <= 6) {
-    const [start] = current.split('-').map(Number);
-    return [current, `${start - 1}-${String(start % 100).padStart(2, '0')}`];
-  }
-  return [current];
+export function resolveKfintechCompanyMatch(
+  company: KfintechCompany,
+  indexes: IpoIndexes,
+): string | null {
+  const name = normalizeName(company.name);
+  if (!name) return null;
+
+  const candidates = indexes.byName.get(name);
+  if (candidates && candidates.length === 1) return candidates[0].id;
+
+  return null;
 }

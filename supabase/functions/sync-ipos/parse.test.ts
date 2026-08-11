@@ -1,5 +1,5 @@
 /**
- * The sync scrapes four undocumented feeds whose columns are HTML fragments
+ * The sync scrapes undocumented sources whose columns are HTML fragments
  * written for a browser table. Almost every defect in that pipeline is a
  * parsing defect, and none of it can be exercised end-to-end without hitting
  * live third-party endpoints — so the pure layer carries the whole test burden.
@@ -8,23 +8,31 @@
  * the wrong company is worse than showing no chart at all, and nothing in
  * production would alert anyone that it happened.
  *
- * The fixtures below are copied verbatim from live responses on 2026-08-10, so
- * the escaping and entity quirks are real rather than imagined.
+ * The ipowatch fixtures below are copied verbatim (cell text and hrefs) from
+ * live pages on 2026-08-11, so the formatting quirks are real rather than
+ * imagined.
  */
 import {
   buildIpoIndexes,
-  chittorgarhRow,
   decodeEntities,
-  financialYear,
-  financialYearsToFetch,
   type GmpReading,
-  gmpRow,
+  ipowatchGmpRow,
+  ipowatchIpoRow,
+  type IpowatchGmpRow,
+  ipowatchObservedAtFrom,
+  type IpowatchListingRow,
   normalizeName,
-  observedAtFrom,
   parseDate,
-  parseGmp,
+  parseIpowatchAmount,
+  parseIpowatchDateRange,
+  parseIpowatchFullDate,
+  parseIpowatchGmpTable,
+  parseIpowatchListingTable,
+  parseIpowatchPercent,
+  parseKfintechCompanies,
   parsePriceBand,
   resolveIpoId,
+  resolveKfintechCompanyMatch,
   slugFromPath,
   statusFor,
   stripTags,
@@ -34,51 +42,49 @@ import {
 
 // --- fixtures --------------------------------------------------------------
 
-const CG_ROW: Record<string, unknown> = {
-  Company:
-    '<a href="https://www.chittorgarh.com/ipo/shiprocket-ipo/2450/" title="Shiprocket IPO Details">Shiprocket Ltd.</a> ',
-  'Issue Category': 'Mainboard',
-  'Opening Date': '12-Aug-2026',
-  'Closing Date': '14-Aug-2026',
-  'Issue Price (Rs.)': '92.00 to 97.00',
-  'Issue Amount (Rs.cr.)': '1617.48',
-  'Listing at': 'BSE, NSE',
-  '~URLRewrite_Folder_Name': 'shiprocket-ipo',
-  '~IssueCloseDate': '2026-08-14T00:00:00.000Z',
-  '~ListingDate': '2026-08-19T00:00:00.000Z',
-  '~isin': '',
-  '~bse_script_code': '',
-  '~nse_symbol': '',
-  '~issue_open_date_plan': '2026-08-12',
+const GMP_TABLE_HTML = `
+<figure class="wp-block-table"><table>
+<tbody>
+<tr><td>IPO Name</td><td class="has-text-align-center">IPO GMP*</td><td class="has-text-align-center">Trend</td><td class="has-text-align-center">Price Band</td><td class="has-text-align-center">Est. Listing</td><td class="has-text-align-center">Date</td><td class="has-text-align-center">Type</td><td class="has-text-align-center">Status</td><td class="has-text-align-center">Last Updated</td></tr>
+<tr><td><a href="https://ipowatch.in/behari-lal-engineering-ipo/">Behari Lal Engineering</a></td><td>₹53</td><td>🟢</td><td>₹285</td><td>₹338 (18.60%)</td><td>12-14 August</td><td>Mainboard</td><td>Upcoming</td><td>11 Aug, 07:45</td></tr>
+<tr><td><a href="https://ipowatch.in/shankesh-jewellers-ipo/">Shankesh Jewellers</a></td><td>₹0</td><td>🟡</td><td>₹-</td><td>₹- (0.00%)</td><td>18-20 August</td><td>Mainboard</td><td>Upcoming</td><td>11 Aug, 07:45</td></tr>
+</tbody>
+</table></figure>
+<table><tbody><tr><td>Trend</td><td>Meaning</td></tr><tr><td>🟢</td><td>Rising</td></tr></tbody></table>
+`;
+
+const GMP_ROW: IpowatchGmpRow = {
+  company_name: 'Behari Lal Engineering',
+  url: 'https://ipowatch.in/behari-lal-engineering-ipo/',
+  gmp_cell: '₹53',
+  price_band_cell: '₹285',
+  est_listing_cell: '₹338 (18.60%)',
+  date_cell: '12-14 August',
+  type_cell: 'Mainboard',
+  last_updated_cell: '11 Aug, 07:45',
 };
 
-const GMP_ROW: Record<string, unknown> = {
-  Name: '<a href="/gmp/qt-foods-ipo/2299/" title="Q&T Foods" target="_parent">Q&T Foods</a> <span class="badge">BSE SME</span>',
-  GMP: '&#8377;<b>6</b> (5.22%)<br><small style="font-size: 12px;"><b>6 &darr; / 6 &uarr;</b></small>',
-  Sub: '-',
-  'Price (₹)': '115',
-  Lot: '1200',
-  '~id': 2299,
-  'Updated-On': '<small style="font-size: 12px; color: #007BFF;"><b>9-Aug 23:34</b></small>',
-  '~Srt_Open': '2026-08-12',
-  '~urlrewrite_folder_name': '/gmp/qt-foods-ipo/2299/',
-  '~IPO_Category': 'SME',
-  '~gmp_percent_calc': '5.22',
-  '~ipo_name': 'Q&T Foods',
-};
+const LISTING_TABLE_HTML = `
+<table id="tablepress-30" class="tablepress tablepress-id-30 dataTable">
+<thead><tr><td>IPO</td><td>IPO Date</td><td>Listing Date</td><td>ISIN</td><td>BSE Symbol</td><td>NSE Symbol</td></tr></thead>
+<tbody>
+<tr><td><a href="https://ipowatch.in/behari-lal-engineering-ipo/">Behari Lal Engineering</a></td><td>12-14 August</td><td>19 August 2026</td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+`;
 
-const RUN = '2026-08-10T04:00:00.000Z';
+const RUN = '2026-08-11T02:15:00.000Z';
 
 function reading(patch: Partial<GmpReading> = {}): GmpReading {
   return {
-    provider: 'CHITTORGARH',
-    provider_slug: 'qt-foods-ipo',
-    company_name: 'Q&T Foods',
+    provider: 'IPOWATCH',
+    provider_slug: 'behari-lal-engineering-ipo',
+    company_name: 'Behari Lal Engineering',
     open_date: '2026-08-12',
     observed_at: RUN,
-    gmp: 6,
-    gmp_percent: 5.22,
-    price: 115,
+    gmp: 53,
+    gmp_percent: 18.6,
+    price: 285,
     sub_times: null,
     source_url: null,
     ...patch,
@@ -89,35 +95,35 @@ function reading(patch: Partial<GmpReading> = {}): GmpReading {
 
 describe('resolveIpoId', () => {
   const indexes = buildIpoIndexes([
-    { id: 'ipo-qt', symbol: 'QTFOODS', company_name: 'Q&T Foods Ltd.', open_date: '2026-08-12' },
+    { id: 'ipo-blal', symbol: 'BEHARILAL', company_name: 'Behari Lal Engineering Ltd.', open_date: '2026-08-12' },
     { id: 'ipo-ship', symbol: 'SHIPROCKET', company_name: 'Shiprocket Ltd.', open_date: '2026-08-12' },
   ]);
   const slugIndex = new Map([
-    ['qt-foods-ipo', { symbol: 'QTFOODS', open_date: '2026-08-12' }],
+    ['behari-lal-engineering-ipo', { symbol: 'BEHARILAL', open_date: '2026-08-12' }],
   ]);
 
   it('matches through the slug when the list leg ran in the same sync', () => {
-    expect(resolveIpoId(reading(), slugIndex, indexes)).toBe('ipo-qt');
+    expect(resolveIpoId(reading(), slugIndex, indexes)).toBe('ipo-blal');
   });
 
   it('falls back to name plus open date when the slug is unknown', () => {
-    expect(resolveIpoId(reading(), new Map(), indexes)).toBe('ipo-qt');
+    expect(resolveIpoId(reading(), new Map(), indexes)).toBe('ipo-blal');
   });
 
   it('matches a company whose name is spelled differently by each feed', () => {
-    const row = reading({ company_name: 'Q and T Foods Private Limited' });
-    expect(resolveIpoId(row, new Map(), indexes)).toBe('ipo-qt');
+    const row = reading({ company_name: 'Behari Lal Engineering Private Limited' });
+    expect(resolveIpoId(row, new Map(), indexes)).toBe('ipo-blal');
   });
 
   it('accepts an open date that moved by a couple of days', () => {
     const row = reading({ open_date: '2026-08-14' });
-    expect(resolveIpoId(row, new Map(), indexes)).toBe('ipo-qt');
+    expect(resolveIpoId(row, new Map(), indexes)).toBe('ipo-blal');
   });
 
   it('refuses to guess when two candidates are both within the date window', () => {
     const ambiguous = buildIpoIndexes([
-      { id: 'a', symbol: 'QTF1', company_name: 'Q&T Foods', open_date: '2026-08-11' },
-      { id: 'b', symbol: 'QTF2', company_name: 'Q&T Foods', open_date: '2026-08-13' },
+      { id: 'a', symbol: 'BL1', company_name: 'Behari Lal Engineering', open_date: '2026-08-11' },
+      { id: 'b', symbol: 'BL2', company_name: 'Behari Lal Engineering', open_date: '2026-08-13' },
     ]);
     expect(resolveIpoId(reading({ open_date: '2026-08-12' }), new Map(), ambiguous)).toBeNull();
   });
@@ -132,52 +138,121 @@ describe('resolveIpoId', () => {
   });
 });
 
+// --- KFintech --------------------------------------------------------------
+
+describe('parseKfintechCompanies', () => {
+  it('extracts the company array from around the JSON.parse(\'...\') literal', () => {
+    const bundle =
+      'const nf=1;const rf=JSON.parse(\'[{"clientId":"44065980180","name":"MV ELECTROSYSTEMS LIMITED"},' +
+      '{"clientId":"53707331280","name":"JUNIPER GREEN ENERGY LIMITED"}]\'),of={};';
+    expect(parseKfintechCompanies(bundle)).toEqual([
+      { clientId: '44065980180', name: 'MV ELECTROSYSTEMS LIMITED' },
+      { clientId: '53707331280', name: 'JUNIPER GREEN ENERGY LIMITED' },
+    ]);
+  });
+
+  it('finds the literal regardless of what the minifier named the variable', () => {
+    // Same payload, different surrounding identifiers — the anchor is the JSON
+    // shape, not a variable name, because that name is not stable across
+    // KFintech's own redeploys.
+    const bundle = 'const zz=JSON.parse(\'[{"clientId":"1","name":"ONLY CO LIMITED"}]\'),qq=2;';
+    expect(parseKfintechCompanies(bundle)).toEqual([{ clientId: '1', name: 'ONLY CO LIMITED' }]);
+  });
+
+  it('returns an empty list rather than throwing when the shape is gone', () => {
+    expect(parseKfintechCompanies('const rf=JSON.parse(\'{}\')')).toEqual([]);
+    expect(parseKfintechCompanies('not even close to the expected bundle')).toEqual([]);
+  });
+
+  it('drops entries missing a clientId or name', () => {
+    const bundle = 'JSON.parse(\'[{"clientId":"","name":"NO ID CO"},{"clientId":"1","name":""}]\')';
+    expect(parseKfintechCompanies(bundle)).toEqual([]);
+  });
+});
+
+describe('resolveKfintechCompanyMatch', () => {
+  const indexes = buildIpoIndexes([
+    { id: 'ipo-mv', symbol: 'MVELEC', company_name: 'MV Electrosystems Ltd.', open_date: '2026-08-01' },
+    { id: 'ipo-ship', symbol: 'SHIPROCKET', company_name: 'Shiprocket Ltd.', open_date: '2026-08-12' },
+  ]);
+
+  it('matches an unambiguous company by name alone, with no open date available', () => {
+    const company = { clientId: '44065980180', name: 'MV ELECTROSYSTEMS LIMITED' };
+    expect(resolveKfintechCompanyMatch(company, indexes)).toBe('ipo-mv');
+  });
+
+  it('refuses to guess when two ipos rows share a normalised name', () => {
+    const ambiguous = buildIpoIndexes([
+      { id: 'a', symbol: 'X1', company_name: 'Repeat Co', open_date: '2026-08-01' },
+      { id: 'b', symbol: 'X2', company_name: 'Repeat Co', open_date: '2026-09-01' },
+    ]);
+    expect(
+      resolveKfintechCompanyMatch({ clientId: '1', name: 'REPEAT CO LIMITED' }, ambiguous),
+    ).toBeNull();
+  });
+
+  it('returns null for an NCD/bond entry with no matching equity IPO', () => {
+    const company = { clientId: '64562521850', name: 'POWER FINANCE CORPORATION LIMITED - NCDS' };
+    expect(resolveKfintechCompanyMatch(company, indexes)).toBeNull();
+  });
+});
+
 // --- timestamps ------------------------------------------------------------
 
-describe('observedAtFrom', () => {
+describe('ipowatchObservedAtFrom', () => {
   it('reads the IST stamp and converts it to UTC', () => {
-    // 9 Aug 23:34 IST is 9 Aug 18:04 UTC.
-    expect(observedAtFrom(GMP_ROW['Updated-On'], RUN)).toBe('2026-08-09T18:04:00.000Z');
+    // 11 Aug 07:45 IST is 11 Aug 02:15 UTC.
+    expect(ipowatchObservedAtFrom(GMP_ROW.last_updated_cell, RUN)).toBe('2026-08-11T02:15:00.000Z');
   });
 
   it('infers the year from the run date', () => {
-    expect(observedAtFrom('<b>3-Feb 10:00</b>', '2027-02-04T04:00:00.000Z')).toBe(
+    expect(ipowatchObservedAtFrom('3 Feb, 10:00', '2027-02-04T04:00:00.000Z')).toBe(
       '2027-02-03T04:30:00.000Z',
     );
   });
 
   it('files a December reading under the previous year when run in January', () => {
-    expect(observedAtFrom('<b>31-Dec 23:00</b>', '2027-01-01T04:00:00.000Z')).toBe(
+    expect(ipowatchObservedAtFrom('31 Dec, 23:00', '2027-01-01T04:00:00.000Z')).toBe(
       '2026-12-31T17:30:00.000Z',
     );
   });
 
   it('falls back to the run timestamp rather than null, which would break dedupe', () => {
-    expect(observedAtFrom('not a date', RUN)).toBe(RUN);
-    expect(observedAtFrom(null, RUN)).toBe(RUN);
+    expect(ipowatchObservedAtFrom('not a date', RUN)).toBe(RUN);
   });
 });
 
-// --- GMP cell --------------------------------------------------------------
+// --- GMP cells ---------------------------------------------------------------
 
-describe('parseGmp', () => {
-  it('pulls the premium and percentage out of the HTML cell', () => {
-    expect(parseGmp(GMP_ROW.GMP)).toEqual({ gmp: 6, percent: 5.22 });
+describe('parseIpowatchAmount', () => {
+  it('reads a real quote', () => {
+    expect(parseIpowatchAmount('₹53')).toBe(53);
   });
 
-  it('treats "--" as no quote, not as zero premium', () => {
-    expect(parseGmp('&#8377;<b>--</b> (0.00%)<br><small><b>0 / 0</b></small>')).toEqual({
-      gmp: null,
-      percent: null,
-    });
+  it('treats "₹0" as an actual zero quote', () => {
+    expect(parseIpowatchAmount('₹0')).toBe(0);
+  });
+
+  it('treats "₹-" as no quote, not as zero premium', () => {
+    expect(parseIpowatchAmount('₹-')).toBeNull();
   });
 
   it('handles a discount', () => {
-    expect(parseGmp('&#8377;<b>-12</b> (-8.50%)')).toEqual({ gmp: -12, percent: -8.5 });
+    expect(parseIpowatchAmount('₹-12')).toBe(-12);
+  });
+});
+
+describe('parseIpowatchPercent', () => {
+  it('pulls the percentage out of the estimated-listing cell', () => {
+    expect(parseIpowatchPercent('₹338 (18.60%)')).toBe(18.6);
   });
 
-  it('ignores the second line, which is a high/low range not a premium', () => {
-    expect(parseGmp('&#8377;<b>22</b> (22.68%)<br><small><b>14 / 99</b></small>').gmp).toBe(22);
+  it('reads the reported 0.00% for a not-yet-priced issue', () => {
+    expect(parseIpowatchPercent('₹- (0.00%)')).toBe(0);
+  });
+
+  it('is null when there is no parenthesised percentage at all', () => {
+    expect(parseIpowatchPercent('₹-')).toBeNull();
   });
 });
 
@@ -247,108 +322,170 @@ describe('decodeEntities and stripTags', () => {
   });
 });
 
+// --- HTML tables (ipowatch.in) ----------------------------------------------
+
+describe('parseIpowatchGmpTable', () => {
+  it('reads every column, skips the header row, and ignores the unrelated legend table', () => {
+    const rows = parseIpowatchGmpTable(GMP_TABLE_HTML);
+    expect(rows).toEqual([
+      GMP_ROW,
+      {
+        company_name: 'Shankesh Jewellers',
+        url: 'https://ipowatch.in/shankesh-jewellers-ipo/',
+        gmp_cell: '₹0',
+        price_band_cell: '₹-',
+        est_listing_cell: '₹- (0.00%)',
+        date_cell: '18-20 August',
+        type_cell: 'Mainboard',
+        last_updated_cell: '11 Aug, 07:45',
+      },
+    ]);
+  });
+
+  it('returns an empty list rather than throwing when the table is gone', () => {
+    expect(parseIpowatchGmpTable('<p>no tables here</p>')).toEqual([]);
+  });
+});
+
+describe('parseIpowatchListingTable', () => {
+  it('reads listing date and exchange symbols by table id', () => {
+    expect(parseIpowatchListingTable(LISTING_TABLE_HTML, 'tablepress-30')).toEqual([
+      {
+        company_name: 'Behari Lal Engineering',
+        url: 'https://ipowatch.in/behari-lal-engineering-ipo/',
+        listing_date_cell: '19 August 2026',
+        bse_symbol: '',
+        nse_symbol: '',
+      },
+    ]);
+  });
+
+  it('returns an empty list for an id that is not on the page', () => {
+    expect(parseIpowatchListingTable(LISTING_TABLE_HTML, 'tablepress-31')).toEqual([]);
+  });
+});
+
+describe('parseIpowatchFullDate', () => {
+  it('reads a full listing date', () => {
+    expect(parseIpowatchFullDate('19 August 2026')).toBe('2026-08-19');
+  });
+
+  it('is null for junk', () => {
+    expect(parseIpowatchFullDate('soon')).toBeNull();
+  });
+});
+
+describe('parseIpowatchDateRange', () => {
+  it('reads an open-close range within one month', () => {
+    expect(parseIpowatchDateRange('12-14 August', '2026-08-10')).toEqual({
+      open: '2026-08-12',
+      close: '2026-08-14',
+    });
+  });
+
+  it('assigns the start day to the previous month when it crosses a boundary', () => {
+    expect(parseIpowatchDateRange('31-7 August', '2026-08-05')).toEqual({
+      open: '2026-07-31',
+      close: '2026-08-07',
+    });
+  });
+
+  it('is null for junk', () => {
+    expect(parseIpowatchDateRange('soon', '2026-08-10')).toEqual({ open: null, close: null });
+  });
+});
+
 // --- row mapping -----------------------------------------------------------
 
-describe('chittorgarhRow', () => {
-  it('maps a live row, including the listing date no exchange supplies', () => {
-    const record = chittorgarhRow(CG_ROW, new Map(), '2026-08-10');
+const LISTING_BY_NAME = new Map<string, IpowatchListingRow>([
+  [
+    normalizeName('Behari Lal Engineering'),
+    {
+      company_name: 'Behari Lal Engineering',
+      url: 'https://ipowatch.in/behari-lal-engineering-ipo/',
+      listing_date_cell: '19 August 2026',
+      bse_symbol: '',
+      nse_symbol: '',
+    },
+  ],
+]);
+
+describe('ipowatchIpoRow', () => {
+  it('maps a live row, including the listing date the GMP table itself does not carry', () => {
+    const record = ipowatchIpoRow(GMP_ROW, LISTING_BY_NAME, new Map(), '2026-08-11');
     expect(record).toMatchObject({
-      symbol: 'SHIPROCKET',
-      company_name: 'Shiprocket Ltd.',
+      symbol: 'BEHARILALENGINEERING',
+      company_name: 'Behari Lal Engineering',
       exchange: 'NSE',
       segment: 'MAINBOARD',
       status: 'UPCOMING',
       open_date: '2026-08-12',
       close_date: '2026-08-14',
       listing_date: '2026-08-19',
-      price_band_min: 92,
-      price_band_max: 97,
-      issue_size_cr: 1617.48,
-      source: 'CHITTORGARH',
+      price_band_min: 285,
+      price_band_max: 285,
+      lot_size: null,
+      issue_size_cr: null,
+      source: 'IPOWATCH',
     });
   });
 
   it('reuses the symbol an exchange already used this run, instead of duplicating', () => {
-    const prior = new Map([[`${normalizeName('Shiprocket Ltd.')}|2026-08-12`, 'SHPRKT']]);
-    expect(chittorgarhRow(CG_ROW, prior, '2026-08-10')?.symbol).toBe('SHPRKT');
+    const prior = new Map([[`${normalizeName('Behari Lal Engineering')}|2026-08-12`, 'BLENG']]);
+    expect(ipowatchIpoRow(GMP_ROW, LISTING_BY_NAME, prior, '2026-08-11')?.symbol).toBe('BLENG');
   });
 
   it('prefers a real exchange symbol over both', () => {
-    const withSymbol = { ...CG_ROW, '~nse_symbol': 'SHIPROCK' };
-    const prior = new Map([[`${normalizeName('Shiprocket Ltd.')}|2026-08-12`, 'SHPRKT']]);
-    expect(chittorgarhRow(withSymbol, prior, '2026-08-10')?.symbol).toBe('SHIPROCK');
+    const withSymbol = new Map(LISTING_BY_NAME).set(normalizeName('Behari Lal Engineering'), {
+      ...LISTING_BY_NAME.get(normalizeName('Behari Lal Engineering'))!,
+      nse_symbol: 'BEHARILAL',
+    });
+    const prior = new Map([[`${normalizeName('Behari Lal Engineering')}|2026-08-12`, 'BLENG']]);
+    expect(ipowatchIpoRow(GMP_ROW, withSymbol, prior, '2026-08-11')?.symbol).toBe('BEHARILAL');
   });
 
   it('marks SME issues', () => {
-    expect(chittorgarhRow({ ...CG_ROW, 'Issue Category': 'SME' }, new Map())?.segment).toBe('SME');
+    const sme = { ...GMP_ROW, type_cell: 'NSE SME' };
+    expect(ipowatchIpoRow(sme, new Map(), new Map(), '2026-08-11')?.segment).toBe('SME');
   });
 
-  it('skips rows with no open date, which would duplicate on every run', () => {
-    const undated = { ...CG_ROW, '~issue_open_date_plan': '', 'Opening Date': '' };
-    expect(chittorgarhRow(undated)).toBeNull();
+  it('leaves listing_date null when the company has not appeared on the listing-date page yet', () => {
+    expect(ipowatchIpoRow(GMP_ROW, new Map(), new Map(), '2026-08-11')?.listing_date).toBeNull();
+  });
+
+  it('skips rows with no parseable date range, which would duplicate on every run', () => {
+    const undated = { ...GMP_ROW, date_cell: 'TBA' };
+    expect(ipowatchIpoRow(undated, LISTING_BY_NAME)).toBeNull();
   });
 
   it('skips rows with no company name', () => {
-    expect(chittorgarhRow({ ...CG_ROW, Company: '' })).toBeNull();
+    expect(ipowatchIpoRow({ ...GMP_ROW, company_name: '' }, LISTING_BY_NAME)).toBeNull();
   });
 });
 
-describe('gmpRow', () => {
+describe('ipowatchGmpRow', () => {
   it('maps a live GMP row', () => {
-    expect(gmpRow(GMP_ROW, RUN)).toEqual({
-      provider: 'CHITTORGARH',
-      provider_slug: 'qt-foods-ipo',
-      company_name: 'Q&T Foods',
+    expect(ipowatchGmpRow(GMP_ROW, RUN)).toEqual({
+      provider: 'IPOWATCH',
+      provider_slug: 'behari-lal-engineering-ipo',
+      company_name: 'Behari Lal Engineering',
       open_date: '2026-08-12',
-      observed_at: '2026-08-09T18:04:00.000Z',
-      gmp: 6,
-      gmp_percent: 5.22,
-      price: 115,
+      observed_at: '2026-08-11T02:15:00.000Z',
+      gmp: 53,
+      gmp_percent: 18.6,
+      price: 285,
       sub_times: null,
-      source_url: 'https://www.investorgain.com/gmp/qt-foods-ipo/2299/',
+      source_url: 'https://ipowatch.in/behari-lal-engineering-ipo/',
     });
   });
 
-  it('reads "-" subscription as unknown rather than zero', () => {
-    expect(gmpRow(GMP_ROW, RUN)?.sub_times).toBeNull();
-  });
-
-  it('drops the percentage when there is no quote', () => {
-    const noQuote = { ...GMP_ROW, GMP: '&#8377;<b>--</b> (0.00%)', '~gmp_percent_calc': '0.00' };
-    expect(gmpRow(noQuote, RUN)).toMatchObject({ gmp: null, gmp_percent: null });
+  it('treats "₹-" as no quote, not as zero premium', () => {
+    const noQuote = { ...GMP_ROW, gmp_cell: '₹-', est_listing_cell: '₹- (0.00%)' };
+    expect(ipowatchGmpRow(noQuote, RUN)).toMatchObject({ gmp: null });
   });
 
   it('skips a row with no slug, since the slug is the only reliable join key', () => {
-    expect(gmpRow({ ...GMP_ROW, '~urlrewrite_folder_name': '' }, RUN)).toBeNull();
-  });
-});
-
-// --- financial year --------------------------------------------------------
-
-describe('financialYear', () => {
-  it('runs April to March', () => {
-    expect(financialYear('2026-04-01')).toBe('2026-27');
-    expect(financialYear('2026-08-10')).toBe('2026-27');
-    expect(financialYear('2027-03-31')).toBe('2026-27');
-    expect(financialYear('2026-03-31')).toBe('2025-26');
-    expect(financialYear('2026-01-15')).toBe('2025-26');
-  });
-
-  it('pads the second half of the century boundary', () => {
-    expect(financialYear('2099-05-01')).toBe('2099-00');
-  });
-});
-
-describe('financialYearsToFetch', () => {
-  it('fetches only the current year for most of the year', () => {
-    expect(financialYearsToFetch('2026-08-10')).toEqual(['2026-27']);
-  });
-
-  it('also fetches the previous year through the first quarter', () => {
-    // Otherwise every 1 April, issues that opened in March silently vanish.
-    expect(financialYearsToFetch('2026-04-01')).toEqual(['2026-27', '2025-26']);
-    expect(financialYearsToFetch('2026-06-30')).toEqual(['2026-27', '2025-26']);
-    expect(financialYearsToFetch('2026-07-01')).toEqual(['2026-27']);
+    expect(ipowatchGmpRow({ ...GMP_ROW, url: null }, RUN)).toBeNull();
   });
 });
 
