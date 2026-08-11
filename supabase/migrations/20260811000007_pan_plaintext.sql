@@ -1,0 +1,18 @@
+-- Deliberate, explicit exception to the "no plaintext credential column"
+-- rule stated in 20260809000001_init.sql's header comment. Automatic
+-- server-side allotment checking (supabase/functions/check-allotments)
+-- needs a PAN to query KFintech with, and the server has never held the
+-- vault key that pan_enc is encrypted under — there is no way to check on
+-- a user's behalf without the PAN being readable server-side. This was a
+-- deliberate, explicitly-confirmed product decision, not an oversight;
+-- every other secret field on this table keeps the existing encrypted
+-- treatment.
+--
+-- This migration only adds the column. The server cannot decrypt existing
+-- pan_enc values — that can only happen on the device that holds the vault
+-- key, so already-saved PANs are migrated client-side, once, the next time
+-- each user unlocks their vault (see lib/db/accounts.ts#migratePanIfNeeded
+-- and its call site in lib/vault.tsx). pan_enc stays in the schema for now
+-- as the source for that one-time backfill; dropping it is a follow-up
+-- once every account has been touched, which can't be verified from here.
+alter table public.demat_accounts add column pan text;

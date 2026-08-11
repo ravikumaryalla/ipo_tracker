@@ -8,6 +8,7 @@ import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Badge, Button, Card, ErrorText, Field, Loading, Screen } from '../../components/ui';
 import { colors, formatInr, radius, spacing, type } from '../../constants/theme';
+import { checkAllotment } from '../../lib/db/allotment';
 import {
   deleteApplication,
   listApplications,
@@ -45,6 +46,15 @@ export default function ApplicationDetail() {
   const [sharesAllotted, setSharesAllotted] = useState('');
   const [sellPrice, setSellPrice] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
+
+  const checkNow = useMutation({
+    mutationFn: () => checkAllotment(id!),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['applications'] });
+    },
+    onError: (e) => setCheckError(e instanceof Error ? e.message : 'Could not check allotment.'),
+  });
 
   const save = useMutation({
     mutationFn: async () => {
@@ -117,6 +127,25 @@ export default function ApplicationDetail() {
         <Row label="Amount blocked" value={formatInr(Number(application.amount_blocked))} />
         <Row label="Applied on" value={new Date(application.applied_at).toLocaleDateString('en-IN')} />
       </Card>
+
+      {application.status === 'APPLIED' && application.kfintech_company_id && (
+        <Card>
+          <Text style={styles.section}>Check allotment</Text>
+          <Text style={[styles.label, { marginBottom: spacing.md }]}>
+            This issue is registered with KFintech — check your allotment status directly instead of
+            visiting their site.
+          </Text>
+          <ErrorText>{checkError}</ErrorText>
+          <Button
+            title="Check allotment now"
+            onPress={() => {
+              setCheckError(null);
+              checkNow.mutate();
+            }}
+            loading={checkNow.isPending}
+          />
+        </Card>
+      )}
 
       {application.shares_allotted > 0 && (
         <Card>

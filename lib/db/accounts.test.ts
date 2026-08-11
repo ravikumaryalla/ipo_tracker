@@ -26,9 +26,10 @@ const INPUT: DematAccountInput = {
   client_id: 'ZY1234',
   dp_id: 'IN300394',
   bo_id: '1208160012345678',
-  username: 'ravi.k',
+  email: 'ravi.k@example.com',
+  phone: '9876543210',
   password: 'Sup3r$ecret!',
-  txn_password: 'T×n-2026',
+  mpin: '4821',
   upi_id: 'ravi@okhdfcbank',
   linked_bank: 'HDFC ••1234',
   pan: 'ABCDE1234F',
@@ -45,11 +46,13 @@ function asRow(patch: Partial<DematAccountRow>): DematAccountRow {
     client_id_enc: null,
     dp_id_enc: null,
     bo_id_enc: null,
-    username_enc: null,
+    email_enc: null,
+    phone_enc: null,
     password_enc: null,
-    txn_password_enc: null,
+    mpin_enc: null,
     upi_id_enc: null,
     linked_bank_enc: null,
+    pan: null,
     pan_enc: null,
     notes_enc: null,
     is_active: true,
@@ -59,6 +62,14 @@ function asRow(patch: Partial<DematAccountRow>): DematAccountRow {
     updated_at: '2026-08-09T00:00:00Z',
     ...patch,
   };
+}
+
+/**
+ * createAccount/updateAccount send `pan` alongside the encryptInput() patch,
+ * not through it — this mirrors that so tests exercise the real shape.
+ */
+function asRowWithPan(input: DematAccountInput): DematAccountRow {
+  return asRow({ ...encryptInput(key, input), pan: input.pan || null });
 }
 
 describe('encryptInput', () => {
@@ -92,21 +103,31 @@ describe('encryptInput', () => {
   });
 
   it('omits fields the caller did not mention, so a partial edit is safe', () => {
-    const patch = encryptInput(key, { broker_id: null, nickname: 'x', password: 'new-one' });
+    const patch = encryptInput(key, { broker_id: null, nickname: 'x', password: 'new-one', pan: '' });
     expect(patch).toHaveProperty('password_enc');
-    expect(patch).not.toHaveProperty('pan_enc');
     expect(patch).not.toHaveProperty('notes_enc');
+  });
+
+  it('never touches pan — it is not a secret field, see SECRET_FIELDS', () => {
+    const patch = encryptInput(key, INPUT);
+    expect(patch).not.toHaveProperty('pan_enc');
+    expect(patch).not.toHaveProperty('pan');
   });
 });
 
 describe('decryptAccount', () => {
-  it('round-trips every field back to what was entered', () => {
-    const account = decryptAccount(key, asRow(encryptInput(key, INPUT)));
+  it('round-trips every encrypted field back to what was entered', () => {
+    const account = decryptAccount(key, asRowWithPan(INPUT));
     for (const field of SECRET_FIELDS) {
       expect(account[field]).toBe(INPUT[field]);
     }
     expect(account.nickname).toBe('Zerodha main');
     expect(account.id).toBe('row-1');
+  });
+
+  it('passes pan through as plain text, not decrypted', () => {
+    const account = decryptAccount(key, asRowWithPan(INPUT));
+    expect(account.pan).toBe('ABCDE1234F');
   });
 
   it('renders a never-set field as an empty string', () => {
@@ -116,13 +137,13 @@ describe('decryptAccount', () => {
   });
 
   it('isolates a corrupt field instead of failing the whole account', () => {
-    const row = asRow(encryptInput(key, INPUT));
+    const row = asRowWithPan(INPUT);
     row.password_enc = 'not-valid-ciphertext';
 
     const account = decryptAccount(key, row);
     expect(account.password).toMatch(/could not decrypt/);
     // The other fields still came through.
-    expect(account.username).toBe('ravi.k');
+    expect(account.email).toBe('ravi.k@example.com');
     expect(account.pan).toBe('ABCDE1234F');
   });
 

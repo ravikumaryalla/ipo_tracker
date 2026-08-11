@@ -57,11 +57,15 @@ export type DematAccountRow = {
   client_id_enc: string | null;
   dp_id_enc: string | null;
   bo_id_enc: string | null;
-  username_enc: string | null;
+  email_enc: string | null;
+  phone_enc: string | null;
   password_enc: string | null;
-  txn_password_enc: string | null;
+  mpin_enc: string | null;
   upi_id_enc: string | null;
   linked_bank_enc: string | null;
+  /** Deliberately unencrypted — see 20260811000007_pan_plaintext.sql. */
+  pan: string | null;
+  /** Legacy encrypted PAN, kept only as the source for the one-time client-side migration to `pan`. */
   pan_enc: string | null;
   notes_enc: string | null;
   is_active: boolean;
@@ -90,6 +94,8 @@ export type Ipo = {
   current_price: number | null;
   registrar: string | null;
   registrar_url: string | null;
+  /** KFintech's internal clientId for this issue's allotment-status lookup. Null unless matched. */
+  kfintech_company_id: string | null;
   source: string;
   created_by: string | null;
   last_synced_at: string | null;
@@ -149,6 +155,7 @@ export type ApplicationPnl = {
   amount_currently_blocked: number;
   realised_pnl: number;
   unrealised_pnl: number;
+  kfintech_company_id: string | null;
 };
 
 export type CredentialHistoryRow = {

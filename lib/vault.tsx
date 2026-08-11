@@ -34,13 +34,15 @@ import {
   readCachedVaultKey,
 } from './crypto/secureStore';
 import { dbError } from './db/error';
-import { reencryptAllAccounts } from './db/accounts';
+import { migratePanIfNeeded, reencryptAllAccounts } from './db/accounts';
 import { supabase } from './supabase';
 import type { Profile } from './types';
 
 export type VaultStatus =
   /** Still reading the profile — we don't yet know if a vault exists. */
   | 'loading'
+  /** The profile read failed (usually offline). Retry via refresh(). */
+  | 'error'
   /** No passphrase has ever been set; the user must create one. */
   | 'uninitialised'
   /** A vault exists but we don't hold the key. */
@@ -90,7 +92,9 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
   const lock = useCallback(() => {
     wipe(keyRef.current);
     keyRef.current = null;
-    setStatus((prev) => (prev === 'uninitialised' || prev === 'loading' ? prev : 'locked'));
+    setStatus((prev) =>
+      prev === 'uninitialised' || prev === 'loading' || prev === 'error' ? prev : 'locked',
+    );
   }, []);
 
   const loadProfile = useCallback(async () => {
@@ -116,7 +120,9 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    loadProfile().catch(() => setStatus('loading'));
+    // 'error' rather than 'loading': a failed read must surface a retry, not
+    // leave the gate waiting forever on a status that will never change.
+    loadProfile().catch(() => setStatus('error'));
 
     const { data: sub } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'SIGNED_OUT') {
@@ -125,7 +131,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
         profileRef.current = null;
         setStatus('loading');
       } else if (event === 'SIGNED_IN') {
-        loadProfile().catch(() => undefined);
+        loadProfile().catch(() => setStatus('error'));
       }
     });
     return () => sub.subscription.unsubscribe();
@@ -203,6 +209,8 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     keyRef.current = key;
     lastActiveRef.current = Date.now();
     setStatus('unlocked');
+    // One-time cleanup, not something unlock should ever wait on or fail for.
+    void migratePanIfNeeded(key).catch(() => undefined);
   }, []);
 
   const unlockWithBiometrics = useCallback(async () => {
@@ -224,6 +232,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     keyRef.current = key;
     lastActiveRef.current = Date.now();
     setStatus('unlocked');
+    void migratePanIfNeeded(key).catch(() => undefined);
     return true;
   }, []);
 
@@ -253,6 +262,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       keyRef.current = key;
       lastActiveRef.current = Date.now();
       setStatus('unlocked');
+      void migratePanIfNeeded(key).catch(() => undefined);
     },
     [],
   );

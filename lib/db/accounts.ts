@@ -12,17 +12,22 @@ import { supabase } from '../supabase';
 import type { DematAccountRow } from '../types';
 import { dbError } from './error';
 
-/** Fields that are encrypted at rest. Order matters only for readability. */
+/**
+ * Fields that are encrypted at rest. Order matters only for readability.
+ *
+ * `pan` is deliberately NOT in this list — see 20260811000007_pan_plaintext.sql
+ * for why it's a plain column now, unlike every other field here.
+ */
 export const SECRET_FIELDS = [
   'client_id',
   'dp_id',
   'bo_id',
-  'username',
+  'email',
+  'phone',
   'password',
-  'txn_password',
+  'mpin',
   'upi_id',
   'linked_bank',
-  'pan',
   'notes',
 ] as const;
 
@@ -37,6 +42,8 @@ export type DematAccount = {
   opened_on: string | null;
   password_changed_at: string | null;
   updated_at: string;
+  /** Plain, not decrypted — see SECRET_FIELDS. */
+  pan: string;
 } & Record<SecretField, string>;
 
 export type DematAccountInput = {
@@ -44,6 +51,7 @@ export type DematAccountInput = {
   nickname: string;
   is_active?: boolean;
   opened_on?: string | null;
+  pan: string;
 } & Partial<Record<SecretField, string>>;
 
 /**
@@ -87,6 +95,7 @@ export function decryptAccount(key: Uint8Array, row: DematAccountRow): DematAcco
     opened_on: row.opened_on,
     password_changed_at: row.password_changed_at,
     updated_at: row.updated_at,
+    pan: row.pan ?? '',
     ...secrets,
   };
 }
@@ -137,6 +146,7 @@ export async function createAccount(
       is_active: input.is_active ?? true,
       opened_on: input.opened_on ?? null,
       password_changed_at: input.password ? new Date().toISOString() : null,
+      pan: input.pan || null,
       ...encryptInput(key, input),
     })
     .select()
@@ -186,6 +196,19 @@ export async function updateAccount(
     });
   }
 
+  // pan is a plain column, not one of SECRET_FIELDS, so it's handled here
+  // instead of the loop above — but credential_history.old_value_enc is
+  // NOT NULL and shared across every field, so the audit trail still gets
+  // an encrypted value: the previous plain PAN, re-encrypted on the way in.
+  if (input.pan !== undefined && (existing.pan ?? '') !== '' && existing.pan !== input.pan) {
+    history.push({
+      user_id: userId,
+      demat_account_id: id,
+      field: 'pan',
+      old_value_enc: encryptString(key, existing.pan as string),
+    });
+  }
+
   if (history.length > 0) {
     const { error: historyError } = await supabase.from('credential_history').insert(history);
     if (historyError) throw historyError;
@@ -198,6 +221,7 @@ export async function updateAccount(
     .update({
       broker_id: input.broker_id,
       nickname: input.nickname,
+      pan: input.pan || null,
       ...(input.is_active === undefined ? {} : { is_active: input.is_active }),
       ...(input.opened_on === undefined ? {} : { opened_on: input.opened_on }),
       ...(passwordChanged ? { password_changed_at: new Date().toISOString() } : {}),
@@ -238,6 +262,12 @@ export async function reencryptAllAccounts(
         ? encryptString(newKey, decryptString(oldKey, packed))
         : null;
     }
+    // pan_enc is legacy (see migratePanIfNeeded below) but a row that hasn't
+    // been migrated yet this session still needs it rotated too, or it would
+    // be left permanently undecryptable under the old key.
+    if (row.pan_enc) {
+      patch.pan_enc = encryptString(newKey, decryptString(oldKey, row.pan_enc));
+    }
     const { error: writeError } = await supabase
       .from('demat_accounts')
       .update(patch)
@@ -246,4 +276,43 @@ export async function reencryptAllAccounts(
     rewritten += 1;
   }
   return rewritten;
+}
+
+/**
+ * One-time, per-account migration off encrypted PAN: decrypts pan_enc with
+ * the just-unlocked key, writes the plain pan column, and clears pan_enc.
+ * Idempotent by construction — a row only matches the query once, since
+ * clearing pan_enc is what stops it matching again next time this runs.
+ *
+ * Call sites tolerate this failing outright (network hiccup, etc.) since it's
+ * a background cleanup, not something unlock should ever block on. A single
+ * row's decrypt failure (e.g. pan_enc corrupted, or already rotated under a
+ * different key by a passphrase change that raced this) is skipped rather
+ * than aborting the rest of the batch.
+ */
+export async function migratePanIfNeeded(key: Uint8Array): Promise<number> {
+  const { data, error } = await supabase
+    .from('demat_accounts')
+    .select('id, pan_enc')
+    .is('pan', null)
+    .not('pan_enc', 'is', null);
+  if (error) throw dbError(error);
+  if (!data || data.length === 0) return 0;
+
+  let migrated = 0;
+  for (const row of data as Pick<DematAccountRow, 'id' | 'pan_enc'>[]) {
+    let pan: string;
+    try {
+      pan = decryptString(key, row.pan_enc as string);
+    } catch {
+      continue;
+    }
+    const { error: writeError } = await supabase
+      .from('demat_accounts')
+      .update({ pan, pan_enc: null })
+      .eq('id', row.id);
+    if (writeError) continue;
+    migrated += 1;
+  }
+  return migrated;
 }
