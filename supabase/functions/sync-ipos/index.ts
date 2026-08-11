@@ -447,10 +447,14 @@ async function fetchKfintechCompanies() {
   if (!homepage.ok) throw new Error(`KFintech homepage responded ${homepage.status}`);
   const html = await homepage.text();
 
-  const scriptMatch = html.match(/src="(\/static\/js\/main\.[a-z0-9]+\.js)"/);
+  // KFintech has served this as both "/static/js/main.<hash>.js" and, since
+  // 2026-08, "./static/js/main.<hash>.js" — tolerate either leading form and
+  // always rebuild the URL with a single slash rather than trusting whichever
+  // one shows up.
+  const scriptMatch = html.match(/src="\.?\/?(static\/js\/main\.[a-z0-9]+\.js)"/);
   if (!scriptMatch) throw new Error('KFintech homepage did not reference a main.<hash>.js bundle');
 
-  const bundleRes = await fetch(`${KFINTECH_BASE}${scriptMatch[1]}`, { headers: BROWSER_HEADERS });
+  const bundleRes = await fetch(`${KFINTECH_BASE}/${scriptMatch[1]}`, { headers: BROWSER_HEADERS });
   if (!bundleRes.ok) throw new Error(`KFintech bundle responded ${bundleRes.status}`);
   const bundle = await bundleRes.text();
 
