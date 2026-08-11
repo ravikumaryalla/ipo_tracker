@@ -31,6 +31,8 @@ export type IpoRecord = {
   price_band_max: number | null;
   lot_size: number | null;
   issue_size_cr: number | null;
+  /** Only the ipowatch per-IPO detail page supplies this; NSE, BSE, and the ipowatch list page never do. */
+  allotment_date: string | null;
   source: string;
 };
 
@@ -236,18 +238,31 @@ function tableById(html: string, id: string): string | null {
 }
 
 /**
- * Find the GMP table by content rather than position or id — the GMP page
- * carries a second, unrelated table and neither one has an id or class, so
- * "the table whose header row mentions both IPO Name and IPO GMP" is the only
- * anchor that will still work after ipowatch's next redesign.
+ * Find a `<table>…</table>` block by content rather than position or id — none
+ * of ipowatch's tables (GMP, list, or per-IPO detail) carry a stable id or
+ * class, so "the table containing all of these strings" is the only anchor
+ * that survives ipowatch's next redesign. Each page can carry more than one
+ * table with overlapping text, so callers should pass strings specific enough
+ * to disambiguate (e.g. a distinctive label, not just "IPO").
  */
-function findIpowatchGmpTable(html: string): string | null {
+function findTableContaining(html: string, mustContain: string[]): string | null {
   const tableRe = /<table[^>]*>([\s\S]*?)<\/table>/gi;
   let m: RegExpExecArray | null;
   while ((m = tableRe.exec(html))) {
-    if (/IPO Name/i.test(m[1]) && /IPO GMP/i.test(m[1])) return m[1];
+    if (mustContain.every((needle) => m![1].includes(needle))) return m[1];
   }
   return null;
+}
+
+/** A key/value table ("IPO Open Date: | August 12, 2026") → { label → value }. */
+function keyValueRows(tableHtml: string): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const row of extractHtmlRows(tableHtml)) {
+    if (row.cells.length < 2) continue;
+    const label = row.cells[0].replace(/:$/, '').trim().toLowerCase();
+    if (label) map.set(label, row.cells[1]);
+  }
+  return map;
 }
 
 export type IpowatchGmpRow = {
@@ -268,7 +283,7 @@ export type IpowatchGmpRow = {
  * of trusted from the source, since the source's own status text can lag.
  */
 export function parseIpowatchGmpTable(html: string): IpowatchGmpRow[] {
-  const table = findIpowatchGmpTable(html);
+  const table = findTableContaining(html, ['IPO Name', 'IPO GMP']);
   if (!table) return [];
 
   return extractHtmlRows(table)
@@ -314,13 +329,103 @@ export function parseIpowatchListingTable(html: string, tableId: string): Ipowat
     }));
 }
 
-/** "19 August 2026" → "2026-08-19"; junk → null. */
+/** "19 August 2026" → "2026-08-19"; junk → null. Used by the listing-date table. */
 export function parseIpowatchFullDate(value: string): string | null {
   const m = value.trim().match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
   if (!m) return null;
   const month = MONTHS.indexOf(m[2].toLowerCase().slice(0, 3));
   if (month < 0) return null;
   return `${m[3]}-${String(month + 1).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+}
+
+/**
+ * "August 17, 2026" → "2026-08-17"; junk → null. Used by the per-IPO detail
+ * page's "IPO Dates" table — a different day/month order and punctuation than
+ * the listing-date table's "19 August 2026", confirmed against the live page.
+ */
+export function parseIpowatchLongDate(value: string): string | null {
+  const m = value.trim().match(/^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})$/);
+  if (!m) return null;
+  const month = MONTHS.indexOf(m[1].toLowerCase().slice(0, 3));
+  if (month < 0) return null;
+  return `${m[3]}-${String(month + 1).padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+}
+
+/**
+ * Fields only an IPO's own detail page carries — none of the aggregate pages
+ * supply lot size at all, and the GMP/list page's "Price Band" and "Issue
+ * Size" (when present) are coarser than what the detail page gives directly.
+ */
+export type IpowatchIpoDetail = {
+  price_band_min: number | null;
+  price_band_max: number | null;
+  issue_size_cr: number | null;
+  lot_size: number | null;
+  allotment_date: string | null;
+};
+
+/**
+ * ipowatch's per-IPO detail page (e.g. /behari-lal-engineering-ipo/) → the
+ * handful of fields the aggregate pages never carry. None of these tables
+ * have an id or class, same as the GMP table, so each is found by a label
+ * unique to it — verified against the live Behari Lal Engineering page on
+ * 2026-08-11:
+ *
+ *   - "IPO Details": key/value rows including "IPO Price Band" ("₹271 to
+ *     ₹285 Per Share") and "Issue Size" ("Approx ₹301.62 Crores").
+ *   - "Market Lot": header row Application | Lot Size | Shares | Amount. The
+ *     table's own "Lot Size" column is actually a lot *count* (how many lots
+ *     that tier applies for), not shares-per-lot — the real lot size is the
+ *     "Retail Minimum" row's Shares cell (1 lot × 52 shares = ₹14,820 at
+ *     ₹285/share, confirmed against the live numbers).
+ *   - "IPO Dates": key/value rows including "Basis of Allotment:" ("August
+ *     17, 2026").
+ *
+ * Missing any one of these tables — a redesign, a withdrawn issue with a
+ * thinner page — degrades that field to null rather than throwing; the
+ * caller (mergeIpowatchDetail) then just keeps whatever the list page
+ * already had.
+ */
+export function parseIpowatchIpoDetail(html: string): IpowatchIpoDetail {
+  const detailTable = findTableContaining(html, ['IPO Price Band', 'Issue Size']);
+  const details = detailTable ? keyValueRows(detailTable) : new Map<string, string>();
+  const [priceBandMin, priceBandMax] = parsePriceBand(details.get('ipo price band') ?? '');
+
+  const lotTable = findTableContaining(html, ['Retail Minimum', 'Lot Size']);
+  const retailMinRow = lotTable
+    ? extractHtmlRows(lotTable).find((row) => row.cells[0] === 'Retail Minimum')
+    : undefined;
+  const lotSize = retailMinRow ? toNumber(retailMinRow.cells[2]) : null;
+
+  const datesTable = findTableContaining(html, ['Basis of Allotment']);
+  const dates = datesTable ? keyValueRows(datesTable) : new Map<string, string>();
+  const allotmentCell = dates.get('basis of allotment');
+
+  return {
+    price_band_min: priceBandMin,
+    price_band_max: priceBandMax,
+    issue_size_cr: toNumber(details.get('issue size') ?? ''),
+    lot_size: lotSize,
+    allotment_date: allotmentCell ? parseIpowatchLongDate(allotmentCell) : null,
+  };
+}
+
+/**
+ * Fold detail-page fields into a list-page IpoRecord. Only overwrites a field
+ * when the detail page actually produced a value — a parse hiccup on one
+ * table (page redesign, a withdrawn issue missing a section) degrades to
+ * "keep what the list page already gave us" rather than blanking a field
+ * that was previously populated.
+ */
+export function mergeIpowatchDetail(record: IpoRecord, detail: IpowatchIpoDetail): IpoRecord {
+  return {
+    ...record,
+    price_band_min: detail.price_band_min ?? record.price_band_min,
+    price_band_max: detail.price_band_max ?? record.price_band_max,
+    issue_size_cr: detail.issue_size_cr ?? record.issue_size_cr,
+    lot_size: detail.lot_size ?? record.lot_size,
+    allotment_date: detail.allotment_date ?? record.allotment_date,
+  };
 }
 
 /**
@@ -424,6 +529,10 @@ export function ipowatchIpoRow(
   priorSymbols: Map<string, string> = new Map(),
   today = new Date().toISOString().slice(0, 10),
 ): IpoRecord | null {
+  // SME issues are out of scope for this sync entirely — the app still lets a
+  // user add one by hand, but the automated pipeline only tracks Mainboard.
+  if (row.type_cell.toUpperCase().includes('SME')) return null;
+
   const company = decodeEntities(row.company_name).trim();
   if (!company) return null;
 
@@ -447,23 +556,29 @@ export function ipowatchIpoRow(
     symbol,
     company_name: company,
     exchange: type.includes('BSE') ? 'BSE' : 'NSE',
-    segment: type.includes('SME') ? 'SME' : 'MAINBOARD',
+    segment: 'MAINBOARD',
     status: statusFor(open, close, today),
     open_date: open,
     close_date: close,
     listing_date: listing ? parseIpowatchFullDate(listing.listing_date_cell) : null,
     price_band_min: min,
     price_band_max: max,
-    // The GMP table does not carry a lot size or issue size; per-IPO detail
-    // pages do, but scraping ~30-40 of those per run is not worth it.
+    // The GMP table does not carry a lot size, issue size, or allotment date.
+    // The per-IPO detail page does — see parseIpowatchIpoDetail below, merged
+    // in by index.ts once SME exclusion has made that affordable to fetch.
     lot_size: null,
     issue_size_cr: null,
+    allotment_date: null,
     source: 'IPOWATCH',
   };
 }
 
 /** ipowatch GMP-table row → GmpReading. */
 export function ipowatchGmpRow(row: IpowatchGmpRow, runIso: string): GmpReading | null {
+  // Same SME exclusion as ipowatchIpoRow — no point tracking a grey market
+  // reading for an issue we no longer sync into `ipos`.
+  if (row.type_cell.toUpperCase().includes('SME')) return null;
+
   const slug = slugFromPath(row.url);
   const company = decodeEntities(row.company_name).trim();
   if (!slug || !company) return null;

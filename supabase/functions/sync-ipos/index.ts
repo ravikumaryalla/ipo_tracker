@@ -36,11 +36,14 @@ import {
   type GmpReading,
   type IpoRecord,
   ipowatchGmpRow,
+  type IpowatchGmpRow,
   ipowatchIpoRow,
   type IpowatchListingRow,
+  mergeIpowatchDetail,
   normalizeName,
   parseDate,
   parseIpowatchGmpTable,
+  parseIpowatchIpoDetail,
   parseIpowatchListingTable,
   parseKfintechCompanies,
   parsePriceBand,
@@ -143,6 +146,7 @@ const fetchNse: Provider = async () => {
         price_band_max: max,
         lot_size: toNumber(row.lotSize ?? row.marketLot ?? row.minBidQuantity),
         issue_size_cr: toNumber(row.issueSize ?? row.issueSizeInCr),
+        allotment_date: null,
         source: 'NSE',
       });
     }
@@ -188,6 +192,7 @@ const fetchBse: Provider = async () => {
       price_band_max: toNumber(row.Issue_Price_To ?? row.PriceTo),
       lot_size: toNumber(row.Market_Lot ?? row.MarketLot),
       issue_size_cr: toNumber(row.Issue_Size),
+      allotment_date: null,
       source: 'BSE',
     });
   }
@@ -199,16 +204,23 @@ const fetchBse: Provider = async () => {
 // ---------------------------------------------------------------------------
 // provider: ipowatch.in
 //
-// No public API; these are the same two server-rendered pages a browser
-// loads. Fetched as plain HTML and walked with a regex table parser (see
-// parse.ts) — confirmed the tables need no client-side JS to be complete: the
-// listing page's own DataTables footer reports "Showing N of N entries" for
-// every row, so a plain fetch already carries the full table.
+// No public API; these are the same server-rendered pages a browser loads.
+// Fetched as plain HTML and walked with a regex table parser (see parse.ts) —
+// confirmed the tables need no client-side JS to be complete: the listing
+// page's own DataTables footer reports "Showing N of N entries" for every
+// row, so a plain fetch already carries the full table.
+//
+// SME issues are dropped in parse.ts (ipowatchIpoRow/ipowatchGmpRow), which is
+// what makes the per-IPO detail fetch below affordable — roughly 10 Mainboard
+// issues in flight at a time rather than ~20 including SME.
 //
 // The listing-date page is fetched separately from the GMP page purely to
 // attach listing_date and exchange symbols by company name; a failure there
 // degrades to null listing_date/symbols rather than failing the whole
 // provider, since the GMP page alone is enough to keep the IPO list current.
+// Same degrade-not-break treatment for the per-IPO detail fetch: one bad page
+// just leaves that IPO's lot_size/issue_size_cr/allotment_date null this run
+// instead of failing the whole sync.
 //
 // Runs last of the three, so its richer fields — listing_date above all, which
 // neither exchange supplies — win the upsert.
@@ -239,6 +251,18 @@ async function fetchIpowatchListingByName(): Promise<Map<string, IpowatchListing
   }
 }
 
+/** One IPO's own page → the fields only it carries. Never throws. */
+async function fetchIpowatchDetail(url: string | null, record: IpoRecord): Promise<IpoRecord> {
+  if (!url) return record;
+  try {
+    const res = await fetch(url, { headers: { ...BROWSER_HEADERS, Accept: 'text/html' } });
+    if (!res.ok) return record;
+    return mergeIpowatchDetail(record, parseIpowatchIpoDetail(await res.text()));
+  } catch {
+    return record;
+  }
+}
+
 const fetchIpowatch: Provider = async (prior) => {
   // Reuse whatever symbol NSE or BSE already chose for the same issue this run.
   // Most live issues carry no exchange identifier at all, so without this a
@@ -259,18 +283,28 @@ const fetchIpowatch: Provider = async (prior) => {
   const gmpHtml = await gmpRes.text();
   const gmpRows = parseIpowatchGmpTable(gmpHtml);
 
+  const base: { row: IpowatchGmpRow; record: IpoRecord }[] = [];
+  for (const row of gmpRows) {
+    const record = ipowatchIpoRow(row, listingByName, priorSymbols, today);
+    if (record) base.push({ row, record });
+  }
+
+  // Every remaining row is Mainboard by now (SME was dropped in ipowatchIpoRow),
+  // so this is ~10 detail-page fetches, not ~20 — fetched in parallel to stay
+  // well inside the Edge Function's time budget.
+  const enriched = await Promise.all(
+    base.map(({ row, record }) => fetchIpowatchDetail(row.url, record)),
+  );
+
   const byKey = new Map<string, IpoRecord>();
   const slugIndex = new Map<string, { symbol: string; open_date: string | null }>();
 
-  for (const row of gmpRows) {
-    const record = ipowatchIpoRow(row, listingByName, priorSymbols, today);
-    if (!record) continue;
-
+  enriched.forEach((record, i) => {
     byKey.set(`${record.symbol}|${record.open_date}`, record);
 
-    const slug = slugFromPath(row.url);
+    const slug = slugFromPath(base[i].row.url);
     if (slug) slugIndex.set(slug, { symbol: record.symbol, open_date: record.open_date });
-  }
+  });
 
   const records = [...byKey.values()];
   if (records.length === 0) throw new Error('ipowatch returned no usable rows');
