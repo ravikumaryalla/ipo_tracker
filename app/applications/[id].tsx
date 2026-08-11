@@ -50,8 +50,22 @@ export default function ApplicationDetail() {
 
   const checkNow = useMutation({
     mutationFn: () => checkAllotment(id!),
-    onSuccess: async () => {
+    onSuccess: async (updated) => {
       await queryClient.invalidateQueries({ queryKey: ['applications'] });
+
+      const { title, message } =
+        updated.status === 'ALLOTTED'
+          ? {
+              title: 'Allotted',
+              message: `You got ${updated.shares_allotted} of ${updated.shares_applied} shares.`,
+            }
+          : updated.status === 'PARTIAL'
+            ? {
+                title: 'Partial allotment',
+                message: `${updated.shares_allotted} of ${updated.shares_applied} shares allotted.`,
+              }
+            : { title: 'Not allotted', message: 'No shares this time.' };
+      Alert.alert(title, message);
     },
     onError: (e) => setCheckError(e instanceof Error ? e.message : 'Could not check allotment.'),
   });
