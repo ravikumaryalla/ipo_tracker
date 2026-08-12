@@ -43,7 +43,17 @@ async function loadCheckRow(applicationId: string): Promise<CheckRow> {
  * enough to call from a button press.
  */
 async function resolveKfintechMatch(ipoId: string): Promise<string | null> {
-  await supabase.functions.invoke('sync-ipos', { body: { onlyKfintech: true } });
+  const { error } = await supabase.functions.invoke('sync-ipos', {
+    body: { onlyKfintech: true },
+  });
+  // functions.invoke resolves with an `error` rather than throwing — ignoring
+  // it here would make a failed invocation (network/auth/timeout) look
+  // identical to "invoked fine, genuinely no match", which is exactly the
+  // confusing "did this even run?" symptom this guards against.
+  if (error) {
+    throw new Error('Could not reach the check service — check your connection and try again.');
+  }
+
   const { data } = await supabase
     .from('ipos')
     .select('kfintech_company_id')
@@ -113,6 +123,9 @@ export async function checkAllotment(applicationId: string): Promise<IpoApplicat
   let companyId = row.ipos?.kfintech_company_id ?? null;
   if (!companyId) companyId = await resolveKfintechMatch(row.ipo_id);
   if (!companyId) {
+    // Record the attempt so "Last checked" moves even though this didn't
+    // resolve — see the matching comment in checkAllotmentsForIpo.
+    await updateApplicationOutcome(applicationId, { status: 'APPLIED' });
     throw new Error('Could not match this IPO to a KFintech-registered issue yet — try again later.');
   }
 
@@ -139,6 +152,12 @@ export async function checkAllotmentsForIpo(
   let companyId = rows[0]?.ipos?.kfintech_company_id ?? null;
   if (!companyId) companyId = await resolveKfintechMatch(ipoId);
   if (!companyId) {
+    // Still record that an attempt was made — otherwise "Last checked"
+    // never moves on a failed match, which reads as the button doing
+    // nothing at all.
+    await Promise.all(
+      applicationIds.map((id) => updateApplicationOutcome(id, { status: 'APPLIED' })),
+    );
     return {
       matched: false,
       message: 'Could not match this IPO to a KFintech-registered issue yet — try again later.',

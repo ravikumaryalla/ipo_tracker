@@ -82,6 +82,13 @@ export default function IpoDetail() {
       if (outcome.matched) await queryClient.invalidateQueries({ queryKey: ['applications'] });
       setCheckResult(outcome);
     },
+    onError: (e) => {
+      // Only reached on a genuine failure to even reach the check service —
+      // a real "not matched" result comes back via onSuccess, not thrown,
+      // so nothing was persisted here and there's nothing to refetch.
+      const message = e instanceof Error ? e.message : 'Could not check status.';
+      setCheckResult({ matched: false, message });
+    },
   });
 
   if (ipo.isLoading) return <Loading />;

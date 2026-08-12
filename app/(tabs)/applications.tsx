@@ -130,6 +130,14 @@ export default function ApplicationsTab() {
       if (outcome.matched) await queryClient.invalidateQueries({ queryKey: ['applications'] });
       setCheckResults((prev) => ({ ...prev, [ipoId]: outcome }));
     },
+    onError: (e, { ipoId }) => {
+      // Only reached on a genuine failure to even reach the check service
+      // (loadCheckRow errors, or resolveKfintechMatch's invoke failing) — a
+      // real "not matched" result is returned via onSuccess, not thrown, so
+      // nothing was persisted here and there's nothing to refetch.
+      const message = e instanceof Error ? e.message : 'Could not check status.';
+      setCheckResults((prev) => ({ ...prev, [ipoId]: { matched: false, message } }));
+    },
   });
 
   if (applications.isLoading) return <Loading label="Loading applications…" />;

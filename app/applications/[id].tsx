@@ -69,7 +69,12 @@ export default function ApplicationDetail() {
               : { title: 'Not allotted', message: 'No shares this time.' };
       Alert.alert(title, message);
     },
-    onError: (e) => setCheckError(e instanceof Error ? e.message : 'Could not check allotment.'),
+    onError: async (e) => {
+      // The "not matched yet" path still touches allotment_checked_at
+      // before throwing, so refetch here too or "Last checked" won't move.
+      await queryClient.invalidateQueries({ queryKey: ['applications'] });
+      setCheckError(e instanceof Error ? e.message : 'Could not check allotment.');
+    },
   });
 
   const save = useMutation({
