@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -6,6 +6,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import {
   Badge,
+  Banner,
   Button,
   Card,
   EmptyState,
@@ -16,9 +17,10 @@ import {
   Screen,
   Segmented,
 } from '../../components/ui';
-import { colors, formatInr, motion, spacing, type } from '../../constants/theme';
+import { colors, formatInr, motion, radius, spacing, type } from '../../constants/theme';
+import { checkAllotments } from '../../lib/db/allotment';
 import { listApplications } from '../../lib/db/applications';
-import type { ApplicationStatus } from '../../lib/types';
+import type { ApplicationPnl, ApplicationStatus } from '../../lib/types';
 
 const STATUS_TONE: Record<ApplicationStatus, 'muted' | 'success' | 'warning' | 'danger' | 'accent'> =
   {
@@ -55,26 +57,80 @@ function matches(status: ApplicationStatus, filter: Filter): boolean {
   return status === 'NOT_ALLOTTED' || status === 'WITHDRAWN' || status === 'REFUNDED';
 }
 
+/** The status every row in the group shares, or null when they differ. */
+function uniformStatus(group: ApplicationPnl[]): ApplicationStatus | null {
+  const first = group[0].status;
+  return group.every((r) => r.status === first) ? first : null;
+}
+
+type OutcomeFields = Pick<ApplicationPnl, 'status' | 'shares_allotted' | 'shares_applied'>;
+
+function outcomeLabel(a: OutcomeFields): string {
+  if (a.status === 'APPLIED') return 'Results were not announced';
+  if (a.status === 'ALLOTTED') return `Allotted, ${a.shares_allotted} of ${a.shares_applied} shares`;
+  if (a.status === 'PARTIAL') return `Partial, ${a.shares_allotted} of ${a.shares_applied} shares`;
+  if (a.status === 'NOT_ALLOTTED') return 'Not allotted';
+  return a.status.replace('_', ' ').toLowerCase();
+}
+
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export default function ApplicationsTab() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [filter, setFilter] = useState<Filter>('all');
+  const [checkResults, setCheckResults] = useState<Record<string, string>>({});
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
 
   const rows = applications.data ?? [];
+
+  const groups = useMemo(() => {
+    const byIpo = new Map<string, ApplicationPnl[]>();
+    for (const r of rows) byIpo.set(r.ipo_id, [...(byIpo.get(r.ipo_id) ?? []), r]);
+    return [...byIpo.values()];
+  }, [rows]);
 
   const counts = useMemo(
     () =>
       FILTERS.reduce<Record<Filter, number>>(
         (acc, f) => {
-          acc[f.key] = rows.filter((r) => matches(r.status, f.key)).length;
+          acc[f.key] = groups.filter((g) => g.some((r) => matches(r.status, f.key))).length;
           return acc;
         },
         { all: 0, live: 0, allotted: 0, closed: 0 },
       ),
-    [rows],
+    [groups],
   );
 
-  const visible = useMemo(() => rows.filter((r) => matches(r.status, filter)), [rows, filter]);
+  const visible = useMemo(
+    () => groups.filter((g) => g.some((r) => matches(r.status, filter))),
+    [groups, filter],
+  );
+
+  const check = useMutation({
+    mutationFn: async ({ ipoId, ids }: { ipoId: string; ids: string[] }) => {
+      const outcomes = await checkAllotments(ids);
+      return { ipoId, outcomes };
+    },
+    onSuccess: async ({ ipoId, outcomes }) => {
+      await queryClient.invalidateQueries({ queryKey: ['applications'] });
+      const group = groups.find((g) => g[0].ipo_id === ipoId) ?? [];
+      const lines = outcomes.map(({ id, result }) => {
+        const nickname = group.find((r) => r.id === id)?.account_nickname ?? id;
+        if (result.status === 'fulfilled') return `${nickname}: ${outcomeLabel(result.value)}`;
+        const reason = result.reason instanceof Error ? result.reason.message : 'Could not check.';
+        return `${nickname}: ${reason}`;
+      });
+      setCheckResults((prev) => ({ ...prev, [ipoId]: lines.join('\n') }));
+    },
+  });
 
   if (applications.isLoading) return <Loading label="Loading applications…" />;
 
@@ -113,56 +169,86 @@ export default function ApplicationsTab() {
           body="Try a different filter to see your other applications."
         />
       ) : (
-        visible.map((a, i) => {
-          const pnl = Number(a.realised_pnl) + Number(a.unrealised_pnl);
+        visible.map((group, i) => {
+          const first = group[0];
+          const status = uniformStatus(group);
+          const categories = new Set(group.map((r) => r.category));
+          const blocked = group
+            .filter((r) => r.status === 'APPLIED')
+            .reduce((s, r) => s + Number(r.amount_blocked), 0);
+          const pnl = group
+            .filter((r) => r.shares_allotted > 0)
+            .reduce((s, r) => s + Number(r.realised_pnl) + Number(r.unrealised_pnl), 0);
+          const hasAllotted = group.some((r) => r.shares_allotted > 0);
+          const eligible = group.filter((r) => r.status === 'APPLIED');
+          const checking = check.isPending && check.variables?.ipoId === first.ipo_id;
+          const result = checkResults[first.ipo_id];
+          const lastChecked = group
+            .map((r) => r.allotment_checked_at)
+            .filter((v): v is string => v !== null)
+            .sort()
+            .at(-1);
+
           return (
             <Animated.View
-              key={a.id}
+              key={first.ipo_id}
               entering={FadeInDown.delay(i * motion.stagger).duration(motion.base)}
             >
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => router.push(`/applications/${a.id}`)}
-              >
-                <Card variant="glass" style={styles.card}>
-                  <View style={[styles.rail, { backgroundColor: STATUS_ACCENT[a.status] }]} />
+              <Card variant="glass" style={styles.card}>
+                <View
+                  style={[
+                    styles.rail,
+                    { backgroundColor: status ? STATUS_ACCENT[status] : colors.borderStrong },
+                  ]}
+                />
 
-                  <View style={styles.header}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.company} numberOfLines={1}>
-                        {a.company_name}
-                      </Text>
-                      <Text style={styles.sub} numberOfLines={1}>
-                        {a.account_nickname} · {a.category} · {a.lots} lot(s)
-                      </Text>
-                    </View>
-                    <Badge label={a.status.replace('_', ' ')} tone={STATUS_TONE[a.status]} />
+                <View style={styles.header}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.company} numberOfLines={1}>
+                      {first.company_name}
+                    </Text>
+                    <Text style={styles.sub} numberOfLines={1}>
+                      {group.length} account{group.length === 1 ? '' : 's'} applied
+                    </Text>
                   </View>
+                  {status ? (
+                    <Badge label={status.replace('_', ' ')} tone={STATUS_TONE[status]} />
+                  ) : (
+                    <Badge label={`${group.length} accounts`} tone="muted" />
+                  )}
+                </View>
 
-                  <View style={styles.footer}>
-                    <View style={styles.metaRow}>
-                      <Icon
-                        name={a.status === 'APPLIED' ? 'wallet' : 'check'}
-                        size={13}
-                        color={colors.textFaint}
-                      />
-                      <Text style={styles.meta}>
-                        {a.status === 'APPLIED'
-                          ? `${formatInr(Number(a.amount_blocked))} blocked`
-                          : `${a.shares_allotted} share(s) allotted`}
+                <View style={styles.pillRow}>
+                  {group.map((r) => (
+                    <Pressable
+                      key={r.id}
+                      onPress={() => router.push(`/applications/${r.id}`)}
+                      style={styles.pill}
+                    >
+                      <View style={[styles.pillDot, { backgroundColor: STATUS_ACCENT[r.status] }]} />
+                      <Text style={styles.pillText} numberOfLines={1}>
+                        {r.account_nickname}
+                        {categories.size > 1 ? ` · ${r.category}` : ''}
                       </Text>
-                    </View>
-                    {a.shares_allotted > 0 && (
+                    </Pressable>
+                  ))}
+                </View>
+
+                {(blocked > 0 || hasAllotted) && (
+                  <View style={styles.footer}>
+                    {blocked > 0 && (
+                      <View style={styles.metaRow}>
+                        <Icon name="wallet" size={13} color={colors.textFaint} />
+                        <Text style={styles.meta}>{formatInr(blocked)} blocked</Text>
+                      </View>
+                    )}
+                    {hasAllotted && (
                       <Text
                         style={[
                           styles.pnl,
                           {
                             color:
-                              pnl > 0
-                                ? colors.success
-                                : pnl < 0
-                                  ? colors.danger
-                                  : colors.textMuted,
+                              pnl > 0 ? colors.success : pnl < 0 ? colors.danger : colors.textMuted,
                           },
                         ]}
                       >
@@ -171,8 +257,28 @@ export default function ApplicationsTab() {
                       </Text>
                     )}
                   </View>
-                </Card>
-              </Pressable>
+                )}
+
+                {eligible.length > 0 && (
+                  <View style={{ marginTop: spacing.lg }}>
+                    <Button
+                      title="Check status"
+                      variant="secondary"
+                      onPress={() => {
+                        setCheckResults((prev) => ({ ...prev, [first.ipo_id]: '' }));
+                        check.mutate({ ipoId: first.ipo_id, ids: eligible.map((r) => r.id) });
+                      }}
+                      loading={checking}
+                    />
+                    {lastChecked && (
+                      <Text style={[styles.meta, { marginTop: spacing.sm }]}>
+                        Last checked {formatDateTime(lastChecked)}
+                      </Text>
+                    )}
+                    {result ? <Banner tone="info">{result}</Banner> : null}
+                  </View>
+                )}
+              </Card>
             </Animated.View>
           );
         })
@@ -187,6 +293,25 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   company: { ...type.bodyStrong, color: colors.text, fontSize: 16 },
   sub: { ...type.caption, color: colors.textMuted, marginTop: 2 },
+  pillRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  pill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm - 2,
+  },
+  pillDot: { width: 6, height: 6, borderRadius: 3 },
+  pillText: { ...type.label, color: colors.textMuted, fontSize: 12, letterSpacing: 0.2 },
   footer: {
     flexDirection: 'row',
     justifyContent: 'space-between',

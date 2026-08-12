@@ -16,7 +16,13 @@
  * Runs with the service role key, which bypasses RLS. It only ever writes the
  * shared `ipos` table (created_by IS NULL), `ipo_gmp`, and `sync_log` — it must
  * never touch user data. Every write below filters on `created_by is null` for
- * exactly that reason.
+ * exactly that reason, with one narrow, intentional exception:
+ * `syncKfintechCompanies` also matches against manually-added IPOs and may
+ * write `kfintech_company_id`/`registrar`/`registrar_url` onto one. That's
+ * safe to exempt because it only ever sets those three additive fields, never
+ * anything the user actually typed (name, dates, price band, lot size), and
+ * only on an unambiguous exact company-name match — a manually-added IPO
+ * would otherwise never get a KFintech match at all.
  *
  * KNOWN GAP: `ipos_symbol_open_idx` is a global unique index on
  * (symbol, open_date), not scoped by created_by. If a user manually adds an IPO
@@ -362,15 +368,23 @@ function windowAround(days: number): { from: string; to: string } {
   };
 }
 
-/** Every synced IPO near today, as the indexes the matching ladder needs. */
-async function loadIpoIndexes(client: SupabaseClient) {
+/**
+ * Every synced IPO near today, as the indexes the matching ladder needs.
+ *
+ * `includeManual` widens this to also cover IPOs a user added by hand — only
+ * `syncKfintechCompanies` passes it, since that pass writes nothing a user
+ * actually typed (see the file header). GMP attachment (`writeGmp`/
+ * `backfillGmp`) never does, staying scoped to auto-synced rows.
+ */
+async function loadIpoIndexes(client: SupabaseClient, options: { includeManual?: boolean } = {}) {
   const { from, to } = windowAround(MATCH_WINDOW_DAYS);
-  const { data, error } = await client
+  let query = client
     .from('ipos')
     .select('id, symbol, company_name, open_date')
-    .is('created_by', null)
     .gte('open_date', from)
     .lte('open_date', to);
+  if (!options.includeManual) query = query.is('created_by', null);
+  const { data, error } = await query;
   if (error) throw error;
   return buildIpoIndexes(data ?? []);
 }
@@ -465,12 +479,13 @@ async function fetchKfintechCompanies() {
 
 async function syncKfintechCompanies(client: SupabaseClient): Promise<number> {
   const companies = await fetchKfintechCompanies();
-  const indexes = await loadIpoIndexes(client);
+  const indexes = await loadIpoIndexes(client, { includeManual: true });
 
   let matched = 0;
   for (const company of companies) {
     const id = resolveKfintechCompanyMatch(company, indexes);
     if (!id) continue;
+    // Deliberately not `.is('created_by', null)` here — see the file header.
     const { error } = await client
       .from('ipos')
       .update({
@@ -478,8 +493,7 @@ async function syncKfintechCompanies(client: SupabaseClient): Promise<number> {
         registrar_url: `${KFINTECH_BASE}/`,
         kfintech_company_id: company.clientId,
       })
-      .eq('id', id)
-      .is('created_by', null);
+      .eq('id', id);
     if (!error) matched += 1;
   }
 
@@ -492,11 +506,36 @@ async function syncKfintechCompanies(client: SupabaseClient): Promise<number> {
 
 type Outcome = { provider: string; ok: boolean; rows: number; message?: string };
 
-Deno.serve(async () => {
+Deno.serve(async (req) => {
   const client = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
   );
+
+  // The app calls this on demand (from the "Check status" button, when an
+  // IPO has no kfintech_company_id yet) wanting just a fast KFintech re-match
+  // attempt, not the full multi-provider scrape the cron runs. `req.json()`
+  // throws on an empty body (the cron invokes with none), so default to `{}`.
+  const body = await req.json().catch(() => ({}));
+  if (body?.onlyKfintech === true) {
+    const outcome: Outcome = { provider: 'KFINTECH_MATCH', ok: false, rows: 0 };
+    try {
+      outcome.rows = await syncKfintechCompanies(client);
+      outcome.ok = true;
+    } catch (e) {
+      outcome.message = e instanceof Error ? e.message : String(e);
+    }
+    await client.from('sync_log').insert({
+      provider: outcome.provider,
+      ok: outcome.ok,
+      rows_upserted: outcome.rows,
+      message: outcome.message ?? null,
+    });
+    return new Response(JSON.stringify({ ok: outcome.ok, outcomes: [outcome] }, null, 2), {
+      status: outcome.ok ? 200 : 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 
   // Named, rather than derived from function identity — with three providers,
   // `provider === fetchNse ? 'NSE' : 'BSE'` would log every ipowatch failure as

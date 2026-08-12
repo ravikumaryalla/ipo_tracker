@@ -64,7 +64,9 @@ export default function ApplicationDetail() {
                 title: 'Partial allotment',
                 message: `${updated.shares_allotted} of ${updated.shares_applied} shares allotted.`,
               }
-            : { title: 'Not allotted', message: 'No shares this time.' };
+            : updated.status === 'APPLIED'
+              ? { title: 'Not announced yet', message: 'Results were not announced.' }
+              : { title: 'Not allotted', message: 'No shares this time.' };
       Alert.alert(title, message);
     },
     onError: (e) => setCheckError(e instanceof Error ? e.message : 'Could not check allotment.'),
@@ -142,12 +144,11 @@ export default function ApplicationDetail() {
         <Row label="Applied on" value={new Date(application.applied_at).toLocaleDateString('en-IN')} />
       </Card>
 
-      {application.status === 'APPLIED' && application.kfintech_company_id && (
+      {application.status === 'APPLIED' && (
         <Card>
           <Text style={styles.section}>Check allotment</Text>
           <Text style={[styles.label, { marginBottom: spacing.md }]}>
-            This issue is registered with KFintech — check your allotment status directly instead of
-            visiting their site.
+            Check your allotment status directly instead of visiting the registrar's site.
           </Text>
           <ErrorText>{checkError}</ErrorText>
           <Button
@@ -158,6 +159,17 @@ export default function ApplicationDetail() {
             }}
             loading={checkNow.isPending}
           />
+          {application.allotment_checked_at && (
+            <Text style={[styles.label, { marginTop: spacing.md }]}>
+              Last checked{' '}
+              {new Date(application.allotment_checked_at).toLocaleString('en-IN', {
+                day: 'numeric',
+                month: 'short',
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </Text>
+          )}
         </Card>
       )}
 

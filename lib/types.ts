@@ -141,6 +141,7 @@ export type ApplicationPnl = {
   applied_at: string;
   sell_price: number | null;
   sold_at: string | null;
+  allotment_checked_at: string | null;
   symbol: string;
   company_name: string;
   segment: IpoSegment;

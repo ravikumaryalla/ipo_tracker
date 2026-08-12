@@ -1,12 +1,24 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React from 'react';
+import React, { useState } from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
 
-import { Badge, Button, Card, Loading, Screen } from '../../components/ui';
+import { Badge, Banner, Button, Card, Loading, Screen } from '../../components/ui';
 import { colors, formatInr, spacing, type } from '../../constants/theme';
+import { checkAllotments } from '../../lib/db/allotment';
 import { getIpo, gmpHistory, gmpIsStale, gmpTrend, latestGmp } from '../../lib/db/ipos';
 import { listApplications } from '../../lib/db/applications';
+import type { ApplicationPnl } from '../../lib/types';
+
+type OutcomeFields = Pick<ApplicationPnl, 'status' | 'shares_allotted' | 'shares_applied'>;
+
+function outcomeLabel(a: OutcomeFields): string {
+  if (a.status === 'APPLIED') return 'Results were not announced';
+  if (a.status === 'ALLOTTED') return `Allotted, ${a.shares_allotted} of ${a.shares_applied} shares`;
+  if (a.status === 'PARTIAL') return `Partial, ${a.shares_allotted} of ${a.shares_applied} shares`;
+  if (a.status === 'NOT_ALLOTTED') return 'Not allotted';
+  return a.status.replace('_', ' ').toLowerCase();
+}
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -39,6 +51,8 @@ const TREND_COLOR = {
 export default function IpoDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const [checkResult, setCheckResult] = useState<string | null>(null);
 
   const ipo = useQuery({ queryKey: ['ipo', id], queryFn: () => getIpo(id!), enabled: Boolean(id) });
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
@@ -48,11 +62,31 @@ export default function IpoDetail() {
     enabled: Boolean(id),
   });
 
+  const check = useMutation({
+    mutationFn: (ids: string[]) => checkAllotments(ids),
+    onSuccess: async (outcomes) => {
+      await queryClient.invalidateQueries({ queryKey: ['applications'] });
+      const lines = outcomes.map(({ id: appId, result }) => {
+        const nickname = mine.find((a) => a.id === appId)?.account_nickname ?? appId;
+        if (result.status === 'fulfilled') return `${nickname}: ${outcomeLabel(result.value)}`;
+        const reason = result.reason instanceof Error ? result.reason.message : 'Could not check.';
+        return `${nickname}: ${reason}`;
+      });
+      setCheckResult(lines.join('\n'));
+    },
+  });
+
   if (ipo.isLoading) return <Loading />;
   if (!ipo.data) return <Screen><Text style={styles.label}>Not found.</Text></Screen>;
 
   const data = ipo.data;
   const mine = (applications.data ?? []).filter((a) => a.ipo_id === id);
+  const eligible = mine.filter((a) => a.status === 'APPLIED');
+  const lastChecked = mine
+    .map((a) => a.allotment_checked_at)
+    .filter((v): v is string => v !== null)
+    .sort()
+    .at(-1);
   const lotAmount =
     data.lot_size && data.price_band_max ? data.lot_size * data.price_band_max : null;
 
@@ -139,6 +173,26 @@ export default function IpoDetail() {
               value={`${a.lots} lot(s) · ${a.status}`}
             />
           ))}
+
+          {eligible.length > 0 && (
+            <View style={{ marginTop: spacing.lg }}>
+              <Button
+                title="Check status"
+                variant="secondary"
+                onPress={() => {
+                  setCheckResult(null);
+                  check.mutate(eligible.map((a) => a.id));
+                }}
+                loading={check.isPending}
+              />
+              {lastChecked && (
+                <Text style={[styles.label, { marginTop: spacing.sm }]}>
+                  Last checked {formatDateTime(lastChecked)}
+                </Text>
+              )}
+              {checkResult ? <Banner tone="info">{checkResult}</Banner> : null}
+            </View>
+          )}
         </Card>
       )}
 
