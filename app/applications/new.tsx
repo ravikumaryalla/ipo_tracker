@@ -37,7 +37,9 @@ export default function NewApplication() {
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: listAccountSummaries });
 
   const [ipoId, setIpoId] = useState<string | null>(params.ipoId ?? null);
-  const [accountId, setAccountId] = useState<string | null>(params.accountId ?? null);
+  const [accountIds, setAccountIds] = useState<string[]>(
+    params.accountId ? [params.accountId] : [],
+  );
   const [category, setCategory] = useState<ApplicationCategory>('RETAIL');
   const [lots, setLots] = useState('1');
   const [bidPrice, setBidPrice] = useState('');
@@ -49,6 +51,10 @@ export default function NewApplication() {
     () => ipos.data?.find((i) => i.id === ipoId) ?? null,
     [ipos.data, ipoId],
   );
+
+  function toggleAccount(id: string) {
+    setAccountIds((prev) => (prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id]));
+  }
 
   // Applying at the cut-off price is the norm, so default to the upper band.
   const effectiveBid = Number(bidPrice) || selectedIpo?.price_band_max || 0;
@@ -62,25 +68,49 @@ export default function NewApplication() {
     mutationFn: async () => {
       if (!userId) throw new Error('Not signed in.');
       if (!ipoId) throw new Error('Pick an IPO.');
-      if (!accountId) throw new Error('Pick the demat account you applied from.');
+      if (accountIds.length === 0) throw new Error('Pick at least one demat account.');
       if (!lotSize) throw new Error('This IPO has no lot size recorded — add it on the IPO first.');
       if (!effectiveBid) throw new Error('Enter the price you bid at.');
       if (!Number(lots)) throw new Error('Enter how many lots you applied for.');
 
-      return createApplication(userId, {
+      const shared = {
         ipo_id: ipoId,
-        demat_account_id: accountId,
         category,
         lots: Number(lots),
         bid_price: effectiveBid,
         lot_size: lotSize,
         application_no: applicationNo.trim() || null,
         upi_ref: upiRef.trim() || null,
-      });
+      };
+
+      const results = await Promise.allSettled(
+        accountIds.map((id) => createApplication(userId, { ...shared, demat_account_id: id })),
+      );
+
+      const failed = results
+        .map((r, i) => ({ r, id: accountIds[i] }))
+        .filter((x): x is { r: PromiseRejectedResult; id: string } => x.r.status === 'rejected');
+
+      return { succeededIds: accountIds.filter((id) => !failed.some((f) => f.id === id)), failed };
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['applications'] });
-      router.back();
+    onSuccess: async ({ succeededIds, failed }) => {
+      if (succeededIds.length > 0) {
+        await queryClient.invalidateQueries({ queryKey: ['applications'] });
+      }
+      if (failed.length === 0) {
+        router.back();
+        return;
+      }
+      setAccountIds(failed.map((f) => f.id));
+      setError(
+        failed
+          .map((f) => {
+            const nickname = accounts.data?.find((a) => a.id === f.id)?.nickname ?? f.id;
+            const reason = f.r.reason instanceof Error ? f.r.reason.message : 'Could not save.';
+            return `${nickname}: ${reason}`;
+          })
+          .join('\n'),
+      );
     },
     onError: (e) => setError(e instanceof Error ? e.message : 'Could not save.'),
   });
@@ -132,16 +162,37 @@ export default function NewApplication() {
       </Card>
 
       <Card>
-        <Text style={styles.section}>Applied from</Text>
+        <View style={styles.sectionRow}>
+          <Text style={styles.section}>
+            Applied from{accountIds.length > 0 ? ` (${accountIds.length})` : ''}
+          </Text>
+          {(accounts.data?.length ?? 0) > 0 && (
+            <Pressable
+              onPress={() =>
+                setAccountIds(
+                  accountIds.length === accounts.data?.length
+                    ? []
+                    : (accounts.data ?? []).map((a) => a.id),
+                )
+              }
+            >
+              <Text style={styles.sectionAction}>
+                {accountIds.length === accounts.data?.length ? 'Clear' : 'Select all'}
+              </Text>
+            </Pressable>
+          )}
+        </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <View style={styles.chipRow}>
             {accounts.data?.map((account) => (
               <Pressable
                 key={account.id}
-                onPress={() => setAccountId(account.id)}
-                style={[styles.chip, account.id === accountId && styles.chipOn]}
+                onPress={() => toggleAccount(account.id)}
+                style={[styles.chip, accountIds.includes(account.id) && styles.chipOn]}
               >
-                <Text style={[styles.chipText, account.id === accountId && styles.chipTextOn]}>
+                <Text
+                  style={[styles.chipText, accountIds.includes(account.id) && styles.chipTextOn]}
+                >
                   {account.nickname}
                 </Text>
               </Pressable>
@@ -193,7 +244,7 @@ export default function NewApplication() {
       </Card>
 
       <Button
-        title="Save application"
+        title={accountIds.length > 1 ? `Save ${accountIds.length} applications` : 'Save application'}
         onPress={() => {
           setError(null);
           create.mutate();
@@ -206,6 +257,12 @@ export default function NewApplication() {
 
 const styles = StyleSheet.create({
   section: { ...type.heading, color: colors.text, marginBottom: spacing.md },
+  sectionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sectionAction: { ...type.label, color: colors.accent, fontSize: 13, marginBottom: spacing.md },
   label: { ...type.label, color: colors.textMuted, marginBottom: spacing.sm },
   chipRow: { flexDirection: 'row', gap: spacing.sm },
   chip: {
