@@ -1,40 +1,15 @@
 /**
- * Orchestrates a KFintech allotment check.
+ * Orchestrates a KFintech allotment check from the app.
  *
- * This is the manual, on-demand path: it queries KFintech straight from the
- * device and persists the outcome through the same path a manual update
- * uses. The same check also runs automatically, server-side, on a schedule
- * (supabase/functions/check-allotments) — PAN is a plain column now (see
- * 20260811000007_pan_plaintext.sql), so this no longer needs the vault key
- * either; it works even while the vault is locked. A missing/ambiguous match
- * or a missing PAN is a real error and never touches the application row —
- * but "checked, and the allotment simply hasn't been announced yet" is not
- * an error, and is persisted (see the `!result.found` branch below).
+ * The actual PAN lookup runs server-side, in supabase/functions/check-
+ * allotments's on-demand mode — the same function and code path the hourly
+ * cron sweep uses, just invoked immediately for named application ids
+ * instead of waiting for the schedule. This file only does two things: make
+ * sure the IPO has a KFintech match before asking (falling back to
+ * sync-ipos's on-demand matcher if it doesn't yet), and invoke the check.
  */
-import { checkKfintechAllotment, type KfintechAllotmentMatch } from '../registrars/kfintech';
 import { supabase } from '../supabase';
-import type { ApplicationStatus, IpoApplication } from '../types';
 import { updateApplicationOutcome } from './applications';
-import { dbError } from './error';
-
-type CheckRow = {
-  id: string;
-  ipo_id: string;
-  shares_applied: number;
-  application_no: string | null;
-  ipos: { kfintech_company_id: string | null } | null;
-  demat_accounts: { pan: string | null } | null;
-};
-
-async function loadCheckRow(applicationId: string): Promise<CheckRow> {
-  const { data, error } = await supabase
-    .from('ipo_applications')
-    .select('id, ipo_id, shares_applied, application_no, ipos(kfintech_company_id), demat_accounts(pan)')
-    .eq('id', applicationId)
-    .single();
-  if (error) throw dbError(error);
-  return data as unknown as CheckRow;
-}
 
 /**
  * Ask sync-ipos to (re-)try matching this IPO against KFintech's company
@@ -62,79 +37,59 @@ async function resolveKfintechMatch(ipoId: string): Promise<string | null> {
   return data?.kfintech_company_id ?? null;
 }
 
-/**
- * Two applications on the same PAN (e.g. retail + shareholder category) come
- * back as two rows from KFintech. Application No. is the only thing that
- * tells them apart — with one candidate there's nothing to disambiguate, and
- * with several we refuse rather than silently attach the wrong one's shares.
- */
-export function pickMatch(
-  matches: KfintechAllotmentMatch[],
-  applicationNo: string | null,
-): KfintechAllotmentMatch {
-  if (matches.length === 1) return matches[0];
-  if (applicationNo) {
-    const exact = matches.find((m) => m.applicationNo === applicationNo);
-    if (exact) return exact;
-  }
-  throw new Error(
-    'KFintech has more than one application on file for this PAN and issue, and this application ' +
-      'has no application number saved to tell them apart. Add the application number, then try again.',
-  );
-}
+export type OnDemandOutcome = 'resolved' | 'not-yet' | 'no-match' | 'no-pan' | 'error';
 
-export function statusFor(match: KfintechAllotmentMatch, fallbackApplied: number): ApplicationStatus {
-  if (match.sharesAllotted <= 0) return 'NOT_ALLOTTED';
-  const applied = match.sharesApplied ?? fallbackApplied;
-  return match.sharesAllotted < applied ? 'PARTIAL' : 'ALLOTTED';
-}
+export type OnDemandCheckResult = {
+  id: string;
+  outcome: OnDemandOutcome;
+  status?: 'ALLOTTED' | 'PARTIAL' | 'NOT_ALLOTTED';
+  shares_allotted?: number;
+  shares_applied?: number;
+  message?: string;
+};
 
-async function checkAllotmentAgainstCompany(
-  row: CheckRow,
-  companyId: string,
-): Promise<IpoApplication> {
-  const pan = row.demat_accounts?.pan;
-  if (!pan) {
-    throw new Error('The linked demat account has no PAN saved — add it before checking allotment.');
-  }
-
-  const result = await checkKfintechAllotment(companyId, pan);
-
-  if (!result.found) {
-    // Not an error — the allotment simply has not been announced yet.
-    // `updateApplicationOutcome` always stamps `allotment_checked_at`, so
-    // this records the attempt without touching the (unchanged) outcome. A
-    // resolved check always moves status away from APPLIED (see
-    // `statusFor`), so callers can tell the two apart by that alone.
-    return updateApplicationOutcome(row.id, { status: 'APPLIED' });
-  }
-
-  const match = pickMatch(result.matches, row.application_no);
-
-  return updateApplicationOutcome(row.id, {
-    status: statusFor(match, row.shares_applied),
-    shares_allotted: match.sharesAllotted,
+/** Invoke check-allotments' on-demand mode for exactly these application ids. */
+async function invokeCheck(applicationIds: string[]): Promise<OnDemandCheckResult[]> {
+  const { data, error } = await supabase.functions.invoke('check-allotments', {
+    body: { applicationIds },
   });
+  if (error) {
+    throw new Error('Could not reach the check service — check your connection and try again.');
+  }
+  return (data?.results ?? []) as OnDemandCheckResult[];
 }
 
-export async function checkAllotment(applicationId: string): Promise<IpoApplication> {
-  const row = await loadCheckRow(applicationId);
-
-  let companyId = row.ipos?.kfintech_company_id ?? null;
-  if (!companyId) companyId = await resolveKfintechMatch(row.ipo_id);
+/**
+ * `kfintechCompanyId` is whatever the caller already has from the
+ * `ApplicationPnl`/`Ipo` row it's rendering — passed in rather than
+ * re-fetched, since check-allotments loads its own copy of everything else
+ * (PAN, application_no) it needs server-side.
+ */
+export async function checkAllotment(
+  applicationId: string,
+  kfintechCompanyId: string | null,
+  ipoId: string,
+): Promise<OnDemandCheckResult> {
+  let companyId = kfintechCompanyId;
+  if (!companyId) companyId = await resolveKfintechMatch(ipoId);
   if (!companyId) {
     // Record the attempt so "Last checked" moves even though this didn't
     // resolve — see the matching comment in checkAllotmentsForIpo.
     await updateApplicationOutcome(applicationId, { status: 'APPLIED' });
-    throw new Error('Could not match this IPO to a KFintech-registered issue yet — try again later.');
+    return {
+      id: applicationId,
+      outcome: 'no-match',
+      message: 'Could not match this IPO to a KFintech-registered issue yet — try again later.',
+    };
   }
 
-  return checkAllotmentAgainstCompany(row, companyId);
+  const [result] = await invokeCheck([applicationId]);
+  return result;
 }
 
 export type BulkAllotmentCheck =
   | { matched: false; message: string }
-  | { matched: true; results: { id: string; result: PromiseSettledResult<IpoApplication> }[] };
+  | { matched: true; results: OnDemandCheckResult[] };
 
 /**
  * Check every account that applied to one IPO in a single go. The KFintech
@@ -146,10 +101,9 @@ export type BulkAllotmentCheck =
 export async function checkAllotmentsForIpo(
   ipoId: string,
   applicationIds: string[],
+  kfintechCompanyId: string | null,
 ): Promise<BulkAllotmentCheck> {
-  const rows = await Promise.all(applicationIds.map((id) => loadCheckRow(id)));
-
-  let companyId = rows[0]?.ipos?.kfintech_company_id ?? null;
+  let companyId = kfintechCompanyId;
   if (!companyId) companyId = await resolveKfintechMatch(ipoId);
   if (!companyId) {
     // Still record that an attempt was made — otherwise "Last checked"
@@ -164,11 +118,6 @@ export async function checkAllotmentsForIpo(
     };
   }
 
-  const settled = await Promise.allSettled(
-    rows.map((row) => checkAllotmentAgainstCompany(row, companyId!)),
-  );
-  return {
-    matched: true,
-    results: applicationIds.map((id, i) => ({ id, result: settled[i] })),
-  };
+  const results = await invokeCheck(applicationIds);
+  return { matched: true, results };
 }

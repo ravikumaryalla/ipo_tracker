@@ -14,24 +14,28 @@ import {
   Screen,
 } from '../../components/ui';
 import { colors, formatInr, spacing, type } from '../../constants/theme';
-import { checkAllotmentsForIpo, type BulkAllotmentCheck } from '../../lib/db/allotment';
+import {
+  checkAllotmentsForIpo,
+  type BulkAllotmentCheck,
+  type OnDemandCheckResult,
+} from '../../lib/db/allotment';
 import { getIpo, gmpHistory, gmpIsStale, gmpTrend, latestGmp } from '../../lib/db/ipos';
 import { listApplications } from '../../lib/db/applications';
-import type { ApplicationPnl, ApplicationStatus } from '../../lib/types';
 
-type OutcomeFields = Pick<ApplicationPnl, 'status' | 'shares_allotted' | 'shares_applied'>;
-
-function outcomeLabel(a: OutcomeFields): string {
-  if (a.status === 'APPLIED') return 'Results were not announced';
-  if (a.status === 'ALLOTTED') return `Allotted, ${a.shares_allotted} of ${a.shares_applied} shares`;
-  if (a.status === 'PARTIAL') return `Partial, ${a.shares_allotted} of ${a.shares_applied} shares`;
-  if (a.status === 'NOT_ALLOTTED') return 'Not allotted';
-  return a.status.replace('_', ' ').toLowerCase();
+function outcomeLabel(r: OnDemandCheckResult): string {
+  if (r.outcome === 'resolved') {
+    if (r.status === 'ALLOTTED') return `Allotted, ${r.shares_allotted} of ${r.shares_applied} shares`;
+    if (r.status === 'PARTIAL') return `Partial, ${r.shares_allotted} of ${r.shares_applied} shares`;
+    return 'Not allotted';
+  }
+  if (r.outcome === 'not-yet') return 'Results were not announced';
+  return r.message ?? 'Could not check.';
 }
 
-function outcomeTone(status: ApplicationStatus): AllotmentCheckResultTone {
-  if (status === 'ALLOTTED' || status === 'PARTIAL') return 'success';
-  return 'neutral';
+function outcomeTone(r: OnDemandCheckResult): AllotmentCheckResultTone {
+  if (r.outcome === 'resolved') return r.status === 'ALLOTTED' || r.status === 'PARTIAL' ? 'success' : 'neutral';
+  if (r.outcome === 'not-yet') return 'neutral';
+  return 'warning';
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -77,7 +81,8 @@ export default function IpoDetail() {
   });
 
   const check = useMutation({
-    mutationFn: (ids: string[]) => checkAllotmentsForIpo(id!, ids),
+    mutationFn: (ids: string[]) =>
+      checkAllotmentsForIpo(id!, ids, ipo.data?.kfintech_company_id ?? null),
     onSuccess: async (outcome) => {
       if (outcome.matched) await queryClient.invalidateQueries({ queryKey: ['applications'] });
       setCheckResult(outcome);
@@ -211,21 +216,13 @@ export default function IpoDetail() {
               {checkResult && checkResult.matched && (
                 <View style={{ marginTop: spacing.md }}>
                   <AllotmentCheckResults
-                    results={checkResult.results.map(({ id: appId, result: r }) => {
-                      const nickname = mine.find((a) => a.id === appId)?.account_nickname ?? appId;
-                      if (r.status === 'fulfilled') {
-                        return {
-                          id: appId,
-                          label: nickname,
-                          message: outcomeLabel(r.value),
-                          tone: outcomeTone(r.value.status),
-                        };
-                      }
+                    results={checkResult.results.map((r) => {
+                      const nickname = mine.find((a) => a.id === r.id)?.account_nickname ?? r.id;
                       return {
-                        id: appId,
+                        id: r.id,
                         label: nickname,
-                        message: r.reason instanceof Error ? r.reason.message : 'Could not check.',
-                        tone: 'warning' as const,
+                        message: outcomeLabel(r),
+                        tone: outcomeTone(r),
                       };
                     })}
                   />

@@ -20,7 +20,11 @@ import {
   Segmented,
 } from '../../components/ui';
 import { colors, formatInr, motion, radius, spacing, type } from '../../constants/theme';
-import { checkAllotmentsForIpo, type BulkAllotmentCheck } from '../../lib/db/allotment';
+import {
+  checkAllotmentsForIpo,
+  type BulkAllotmentCheck,
+  type OnDemandCheckResult,
+} from '../../lib/db/allotment';
 import { listApplications } from '../../lib/db/applications';
 import type { ApplicationPnl, ApplicationStatus } from '../../lib/types';
 
@@ -65,19 +69,20 @@ function uniformStatus(group: ApplicationPnl[]): ApplicationStatus | null {
   return group.every((r) => r.status === first) ? first : null;
 }
 
-type OutcomeFields = Pick<ApplicationPnl, 'status' | 'shares_allotted' | 'shares_applied'>;
-
-function outcomeLabel(a: OutcomeFields): string {
-  if (a.status === 'APPLIED') return 'Results were not announced';
-  if (a.status === 'ALLOTTED') return `Allotted, ${a.shares_allotted} of ${a.shares_applied} shares`;
-  if (a.status === 'PARTIAL') return `Partial, ${a.shares_allotted} of ${a.shares_applied} shares`;
-  if (a.status === 'NOT_ALLOTTED') return 'Not allotted';
-  return a.status.replace('_', ' ').toLowerCase();
+function outcomeLabel(r: OnDemandCheckResult): string {
+  if (r.outcome === 'resolved') {
+    if (r.status === 'ALLOTTED') return `Allotted, ${r.shares_allotted} of ${r.shares_applied} shares`;
+    if (r.status === 'PARTIAL') return `Partial, ${r.shares_allotted} of ${r.shares_applied} shares`;
+    return 'Not allotted';
+  }
+  if (r.outcome === 'not-yet') return 'Results were not announced';
+  return r.message ?? 'Could not check.';
 }
 
-function outcomeTone(status: ApplicationStatus): AllotmentCheckResultTone {
-  if (status === 'ALLOTTED' || status === 'PARTIAL') return 'success';
-  return 'neutral';
+function outcomeTone(r: OnDemandCheckResult): AllotmentCheckResultTone {
+  if (r.outcome === 'resolved') return r.status === 'ALLOTTED' || r.status === 'PARTIAL' ? 'success' : 'neutral';
+  if (r.outcome === 'not-yet') return 'neutral';
+  return 'warning';
 }
 
 function formatDateTime(iso: string): string {
@@ -122,8 +127,16 @@ export default function ApplicationsTab() {
   );
 
   const check = useMutation({
-    mutationFn: async ({ ipoId, ids }: { ipoId: string; ids: string[] }) => {
-      const outcome = await checkAllotmentsForIpo(ipoId, ids);
+    mutationFn: async ({
+      ipoId,
+      ids,
+      kfintechCompanyId,
+    }: {
+      ipoId: string;
+      ids: string[];
+      kfintechCompanyId: string | null;
+    }) => {
+      const outcome = await checkAllotmentsForIpo(ipoId, ids, kfintechCompanyId);
       return { ipoId, outcome };
     },
     onSuccess: async ({ ipoId, outcome }) => {
@@ -278,7 +291,11 @@ export default function ApplicationsTab() {
                           delete next[first.ipo_id];
                           return next;
                         });
-                        check.mutate({ ipoId: first.ipo_id, ids: eligible.map((r) => r.id) });
+                        check.mutate({
+                          ipoId: first.ipo_id,
+                          ids: eligible.map((r) => r.id),
+                          kfintechCompanyId: first.kfintech_company_id,
+                        });
                       }}
                       loading={checking}
                     />
@@ -293,21 +310,14 @@ export default function ApplicationsTab() {
                     {result && result.matched && (
                       <View style={{ marginTop: spacing.md }}>
                         <AllotmentCheckResults
-                          results={result.results.map(({ id, result: r }) => {
-                            const nickname = group.find((row) => row.id === id)?.account_nickname ?? id;
-                            if (r.status === 'fulfilled') {
-                              return {
-                                id,
-                                label: nickname,
-                                message: outcomeLabel(r.value),
-                                tone: outcomeTone(r.value.status),
-                              };
-                            }
+                          results={result.results.map((r) => {
+                            const nickname =
+                              group.find((row) => row.id === r.id)?.account_nickname ?? r.id;
                             return {
-                              id,
+                              id: r.id,
                               label: nickname,
-                              message: r.reason instanceof Error ? r.reason.message : 'Could not check.',
-                              tone: 'warning' as const,
+                              message: outcomeLabel(r),
+                              tone: outcomeTone(r),
                             };
                           })}
                         />

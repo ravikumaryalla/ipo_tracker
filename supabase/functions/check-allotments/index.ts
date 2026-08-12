@@ -1,7 +1,15 @@
 /**
- * check-allotments — automatically checks KFintech allotment status for
- * every application that's still waiting on one, and writes the result
- * straight into public.ipo_applications.
+ * check-allotments — checks KFintech allotment status and writes the result
+ * straight into public.ipo_applications. Two entry points:
+ *
+ *  - Scheduled (no request body): every application still waiting on a
+ *    result, gated by whether its IPO's allotment_date is due yet (see
+ *    below). This is the hourly cron sweep.
+ *  - On-demand (`{ applicationIds: string[] }` in the body): the app's
+ *    "Check status" button. Runs the identical check/persist logic against
+ *    exactly the ids named, skipping the due-date gate — an explicit user
+ *    tap is its own justification, unlike the sweep, which needs the gate
+ *    to avoid hammering KFintech before results are plausibly out.
  *
  * This only exists because PAN became a plain column
  * (see supabase/migrations/20260811000007_pan_plaintext.sql) — that was a
@@ -11,20 +19,26 @@
  * other secret on demat_accounts stays encrypted; this is the one place
  * that trade-off was made on purpose.
  *
- * Schedule: a row becomes a candidate once its IPO's allotment_date has
- * reached 19:00 IST (Basis of Allotment typically finalises in the
- * evening — see parse.ts#isAllotmentCheckDue), and stays a candidate on
- * every hourly run after that until KFintech returns a definitive result
- * (status stops being 'APPLIED', so it drops out of the query on its own —
- * no extra state needed to know when to stop).
+ * The on-demand path is the one place this function trusts caller input, so
+ * it verifies the caller actually owns every id it's given (via a second,
+ * anon-key + caller-JWT client that resolves the real user id) before the
+ * service-role client — which bypasses RLS — ever touches those rows.
+ * Skipping that check would let any authenticated user read anyone's
+ * allotment result by guessing/reusing an application id.
+ *
+ * Scheduled candidates become due once their IPO's allotment_date reaches
+ * 19:00 IST (Basis of Allotment typically finalises in the evening — see
+ * parse.ts#isAllotmentCheckDue), and stay a candidate on every hourly run
+ * after that until KFintech returns a definitive result (status stops
+ * being 'APPLIED', so it drops out of the query on its own).
  *
  * A WORD OF WARNING, same as sync-ipos: the KFintech endpoint below is
- * undocumented, reverse-engineered from their own frontend bundle (see
- * lib/registrars/kfintech.ts, whose request shape this mirrors exactly for
- * the manual/on-device check). It can change shape without notice. This
- * function is written to degrade rather than break: one application's
- * failure never stops the batch, and every run is recorded in
- * public.sync_log regardless of outcome.
+ * undocumented, reverse-engineered from their own frontend bundle. It can
+ * change shape without notice. This function is written to degrade rather
+ * than break: one application's failure never stops the batch. Only the
+ * scheduled sweep is recorded in public.sync_log — logging every on-demand
+ * tap under the same provider tag would make a genuinely broken cron look
+ * healthy on the app's staleness banner (see lib/db/ipos.ts).
  *
  * Deploy:  supabase functions deploy check-allotments
  * Invoke:  supabase functions invoke check-allotments
@@ -94,7 +108,13 @@ function dueRows(candidates: CandidateRow[], nowIso: string): DueRow[] {
   return due;
 }
 
-type CheckResult = { row: DueRow; outcome: 'resolved' | 'not-yet' | 'error'; message?: string };
+type CheckResult = {
+  row: DueRow;
+  outcome: 'resolved' | 'not-yet' | 'error';
+  status?: AllotmentOutcome;
+  shares_allotted?: number;
+  message?: string;
+};
 
 async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResult> {
   try {
@@ -123,13 +143,135 @@ async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResul
       .eq('id', row.id);
     if (error) throw error;
 
-    return { row, outcome: 'resolved' };
+    return { row, outcome: 'resolved', status, shares_allotted: match.sharesAllotted };
   } catch (e) {
     return { row, outcome: 'error', message: e instanceof Error ? e.message : String(e) };
   }
 }
 
-Deno.serve(async () => {
+// ---------------------------------------------------------------------------
+// on-demand path — the app's "Check status" button
+// ---------------------------------------------------------------------------
+
+type OnDemandResult = {
+  id: string;
+  outcome: 'resolved' | 'not-yet' | 'no-match' | 'no-pan' | 'error';
+  status?: AllotmentOutcome;
+  shares_allotted?: number;
+  shares_applied?: number;
+  message?: string;
+};
+
+async function loadCandidatesByIds(client: SupabaseClient, ids: string[]): Promise<CandidateRow[]> {
+  const { data, error } = await client
+    .from('ipo_applications')
+    .select(
+      'id, shares_applied, application_no, ipos(kfintech_company_id, allotment_date), demat_accounts(pan)',
+    )
+    .in('id', ids);
+  if (error) throw error;
+  return (data ?? []) as unknown as CandidateRow[];
+}
+
+/**
+ * Which of the requested ids the caller actually owns. Filtering here rather
+ * than erroring on a mismatch means a stale/foreign id in the request just
+ * gets silently dropped instead of leaking whether it exists.
+ */
+async function ownedIds(
+  serviceClient: SupabaseClient,
+  userId: string,
+  ids: string[],
+): Promise<Set<string>> {
+  const { data, error } = await serviceClient
+    .from('ipo_applications')
+    .select('id')
+    .eq('user_id', userId)
+    .in('id', ids);
+  if (error) throw error;
+  return new Set((data ?? []).map((row: { id: string }) => row.id));
+}
+
+async function handleOnDemand(req: Request, requestedIds: string[]): Promise<Response> {
+  const unauthorized = () =>
+    new Response(JSON.stringify({ ok: false, error: 'Unauthorized' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader) return unauthorized();
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+
+  // A second client, scoped to the caller's own JWT rather than the service
+  // role, purely to find out who is actually asking — see the file header
+  // for why this check exists.
+  const callerClient = createClient(supabaseUrl, Deno.env.get('SUPABASE_ANON_KEY')!, {
+    global: { headers: { Authorization: authHeader } },
+  });
+  const { data: userData, error: userError } = await callerClient.auth.getUser();
+  if (userError || !userData?.user) return unauthorized();
+
+  const serviceClient = createClient(supabaseUrl, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+
+  const allowed = await ownedIds(serviceClient, userData.user.id, requestedIds);
+  const idsToCheck = requestedIds.filter((id) => allowed.has(id));
+
+  const candidates =
+    idsToCheck.length > 0 ? await loadCandidatesByIds(serviceClient, idsToCheck) : [];
+
+  const results: OnDemandResult[] = [];
+  const checkable: DueRow[] = [];
+
+  for (const row of candidates) {
+    const companyId = row.ipos?.kfintech_company_id;
+    const pan = row.demat_accounts?.pan;
+    if (!companyId) {
+      results.push({
+        id: row.id,
+        outcome: 'no-match',
+        message: 'Could not match this IPO to a KFintech-registered issue yet — try again later.',
+      });
+      continue;
+    }
+    if (!pan) {
+      results.push({
+        id: row.id,
+        outcome: 'no-pan',
+        message: 'The linked demat account has no PAN saved — add it before checking allotment.',
+      });
+      continue;
+    }
+    checkable.push({ id: row.id, shares_applied: row.shares_applied, application_no: row.application_no, companyId, pan });
+  }
+
+  const checked = await Promise.all(checkable.map((row) => checkOne(serviceClient, row)));
+  for (const c of checked) {
+    results.push({
+      id: c.row.id,
+      outcome: c.outcome,
+      status: c.status,
+      shares_allotted: c.shares_allotted,
+      shares_applied: c.row.shares_applied,
+      message: c.message,
+    });
+  }
+
+  return new Response(JSON.stringify({ ok: true, results }, null, 2), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+Deno.serve(async (req) => {
+  const body = await req.json().catch(() => ({}));
+  const requestedIds: unknown = body?.applicationIds;
+  if (Array.isArray(requestedIds) && requestedIds.length > 0) {
+    const ids = requestedIds.filter((id): id is string => typeof id === 'string');
+    return handleOnDemand(req, ids);
+  }
+
   const client = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
