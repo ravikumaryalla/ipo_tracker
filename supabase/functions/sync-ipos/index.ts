@@ -477,6 +477,18 @@ async function fetchKfintechCompanies() {
   return companies;
 }
 
+// The registrar/company-id match barely changes once made, so the cron only
+// needs to run it once ever, not on every scheduled tick — gate on whether a
+// successful KFINTECH_MATCH row already exists rather than adding new state.
+async function hasSucceededBefore(client: SupabaseClient, provider: string): Promise<boolean> {
+  const { count } = await client
+    .from('sync_log')
+    .select('id', { count: 'exact', head: true })
+    .eq('provider', provider)
+    .eq('ok', true);
+  return (count ?? 0) > 0;
+}
+
 async function syncKfintechCompanies(client: SupabaseClient): Promise<number> {
   const companies = await fetchKfintechCompanies();
   const indexes = await loadIpoIndexes(client, { includeManual: true });
@@ -592,11 +604,16 @@ Deno.serve(async (req) => {
   });
 
   const kfintech: Outcome = { provider: 'KFINTECH_MATCH', ok: false, rows: 0 };
-  try {
-    kfintech.rows = await syncKfintechCompanies(client);
+  if (await hasSucceededBefore(client, 'KFINTECH_MATCH')) {
     kfintech.ok = true;
-  } catch (e) {
-    kfintech.message = e instanceof Error ? e.message : String(e);
+    kfintech.message = 'skipped: already synced once';
+  } else {
+    try {
+      kfintech.rows = await syncKfintechCompanies(client);
+      kfintech.ok = true;
+    } catch (e) {
+      kfintech.message = e instanceof Error ? e.message : String(e);
+    }
   }
   outcomes.push(kfintech);
   await client.from('sync_log').insert({
