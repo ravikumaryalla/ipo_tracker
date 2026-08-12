@@ -3,12 +3,21 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
 
-import { Badge, Banner, Button, Card, Loading, Screen } from '../../components/ui';
+import {
+  AllotmentCheckResults,
+  type AllotmentCheckResultTone,
+  Badge,
+  Banner,
+  Button,
+  Card,
+  Loading,
+  Screen,
+} from '../../components/ui';
 import { colors, formatInr, spacing, type } from '../../constants/theme';
-import { checkAllotments } from '../../lib/db/allotment';
+import { checkAllotmentsForIpo, type BulkAllotmentCheck } from '../../lib/db/allotment';
 import { getIpo, gmpHistory, gmpIsStale, gmpTrend, latestGmp } from '../../lib/db/ipos';
 import { listApplications } from '../../lib/db/applications';
-import type { ApplicationPnl } from '../../lib/types';
+import type { ApplicationPnl, ApplicationStatus } from '../../lib/types';
 
 type OutcomeFields = Pick<ApplicationPnl, 'status' | 'shares_allotted' | 'shares_applied'>;
 
@@ -18,6 +27,11 @@ function outcomeLabel(a: OutcomeFields): string {
   if (a.status === 'PARTIAL') return `Partial, ${a.shares_allotted} of ${a.shares_applied} shares`;
   if (a.status === 'NOT_ALLOTTED') return 'Not allotted';
   return a.status.replace('_', ' ').toLowerCase();
+}
+
+function outcomeTone(status: ApplicationStatus): AllotmentCheckResultTone {
+  if (status === 'ALLOTTED' || status === 'PARTIAL') return 'success';
+  return 'neutral';
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -52,7 +66,7 @@ export default function IpoDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const [checkResult, setCheckResult] = useState<string | null>(null);
+  const [checkResult, setCheckResult] = useState<BulkAllotmentCheck | null>(null);
 
   const ipo = useQuery({ queryKey: ['ipo', id], queryFn: () => getIpo(id!), enabled: Boolean(id) });
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
@@ -63,16 +77,10 @@ export default function IpoDetail() {
   });
 
   const check = useMutation({
-    mutationFn: (ids: string[]) => checkAllotments(ids),
-    onSuccess: async (outcomes) => {
-      await queryClient.invalidateQueries({ queryKey: ['applications'] });
-      const lines = outcomes.map(({ id: appId, result }) => {
-        const nickname = mine.find((a) => a.id === appId)?.account_nickname ?? appId;
-        if (result.status === 'fulfilled') return `${nickname}: ${outcomeLabel(result.value)}`;
-        const reason = result.reason instanceof Error ? result.reason.message : 'Could not check.';
-        return `${nickname}: ${reason}`;
-      });
-      setCheckResult(lines.join('\n'));
+    mutationFn: (ids: string[]) => checkAllotmentsForIpo(id!, ids),
+    onSuccess: async (outcome) => {
+      if (outcome.matched) await queryClient.invalidateQueries({ queryKey: ['applications'] });
+      setCheckResult(outcome);
     },
   });
 
@@ -190,7 +198,32 @@ export default function IpoDetail() {
                   Last checked {formatDateTime(lastChecked)}
                 </Text>
               )}
-              {checkResult ? <Banner tone="info">{checkResult}</Banner> : null}
+              {checkResult && !checkResult.matched && (
+                <Banner tone="warning">{checkResult.message}</Banner>
+              )}
+              {checkResult && checkResult.matched && (
+                <View style={{ marginTop: spacing.md }}>
+                  <AllotmentCheckResults
+                    results={checkResult.results.map(({ id: appId, result: r }) => {
+                      const nickname = mine.find((a) => a.id === appId)?.account_nickname ?? appId;
+                      if (r.status === 'fulfilled') {
+                        return {
+                          id: appId,
+                          label: nickname,
+                          message: outcomeLabel(r.value),
+                          tone: outcomeTone(r.value.status),
+                        };
+                      }
+                      return {
+                        id: appId,
+                        label: nickname,
+                        message: r.reason instanceof Error ? r.reason.message : 'Could not check.',
+                        tone: 'warning' as const,
+                      };
+                    })}
+                  />
+                </View>
+              )}
             </View>
           )}
         </Card>

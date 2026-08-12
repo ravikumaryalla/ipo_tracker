@@ -79,15 +79,10 @@ export function statusFor(match: KfintechAllotmentMatch, fallbackApplied: number
   return match.sharesAllotted < applied ? 'PARTIAL' : 'ALLOTTED';
 }
 
-export async function checkAllotment(applicationId: string): Promise<IpoApplication> {
-  const row = await loadCheckRow(applicationId);
-
-  let companyId = row.ipos?.kfintech_company_id ?? null;
-  if (!companyId) companyId = await resolveKfintechMatch(row.ipo_id);
-  if (!companyId) {
-    throw new Error('Could not match this IPO to a KFintech-registered issue yet — try again later.');
-  }
-
+async function checkAllotmentAgainstCompany(
+  row: CheckRow,
+  companyId: string,
+): Promise<IpoApplication> {
   const pan = row.demat_accounts?.pan;
   if (!pan) {
     throw new Error('The linked demat account has no PAN saved — add it before checking allotment.');
@@ -101,25 +96,60 @@ export async function checkAllotment(applicationId: string): Promise<IpoApplicat
     // this records the attempt without touching the (unchanged) outcome. A
     // resolved check always moves status away from APPLIED (see
     // `statusFor`), so callers can tell the two apart by that alone.
-    return updateApplicationOutcome(applicationId, { status: 'APPLIED' });
+    return updateApplicationOutcome(row.id, { status: 'APPLIED' });
   }
 
   const match = pickMatch(result.matches, row.application_no);
 
-  return updateApplicationOutcome(applicationId, {
+  return updateApplicationOutcome(row.id, {
     status: statusFor(match, row.shares_applied),
     shares_allotted: match.sharesAllotted,
   });
 }
 
+export async function checkAllotment(applicationId: string): Promise<IpoApplication> {
+  const row = await loadCheckRow(applicationId);
+
+  let companyId = row.ipos?.kfintech_company_id ?? null;
+  if (!companyId) companyId = await resolveKfintechMatch(row.ipo_id);
+  if (!companyId) {
+    throw new Error('Could not match this IPO to a KFintech-registered issue yet — try again later.');
+  }
+
+  return checkAllotmentAgainstCompany(row, companyId);
+}
+
+export type BulkAllotmentCheck =
+  | { matched: false; message: string }
+  | { matched: true; results: { id: string; result: PromiseSettledResult<IpoApplication> }[] };
+
 /**
- * Check several applications (e.g. every account that applied to one IPO) in
- * one go. Each one succeeds or fails independently — one account with no PAN
- * saved must not stop the others from resolving.
+ * Check every account that applied to one IPO in a single go. The KFintech
+ * match is resolved once for the IPO, not once per account — with several
+ * accounts pending the same unmatched IPO, resolving it per account meant
+ * redundant edge-function calls and the same "not matched yet" message
+ * repeated once per account instead of shown once.
  */
-export async function checkAllotments(
+export async function checkAllotmentsForIpo(
+  ipoId: string,
   applicationIds: string[],
-): Promise<{ id: string; result: PromiseSettledResult<IpoApplication> }[]> {
-  const settled = await Promise.allSettled(applicationIds.map((id) => checkAllotment(id)));
-  return applicationIds.map((id, i) => ({ id, result: settled[i] }));
+): Promise<BulkAllotmentCheck> {
+  const rows = await Promise.all(applicationIds.map((id) => loadCheckRow(id)));
+
+  let companyId = rows[0]?.ipos?.kfintech_company_id ?? null;
+  if (!companyId) companyId = await resolveKfintechMatch(ipoId);
+  if (!companyId) {
+    return {
+      matched: false,
+      message: 'Could not match this IPO to a KFintech-registered issue yet — try again later.',
+    };
+  }
+
+  const settled = await Promise.allSettled(
+    rows.map((row) => checkAllotmentAgainstCompany(row, companyId!)),
+  );
+  return {
+    matched: true,
+    results: applicationIds.map((id, i) => ({ id, result: settled[i] })),
+  };
 }

@@ -22,6 +22,7 @@ function row(patch: Partial<ApplicationPnl>): ApplicationPnl {
     applied_at: '2026-08-01T00:00:00Z',
     sell_price: null,
     sold_at: null,
+    allotment_checked_at: null,
     symbol: 'TESTCO',
     company_name: 'Test Co',
     segment: 'MAINBOARD',

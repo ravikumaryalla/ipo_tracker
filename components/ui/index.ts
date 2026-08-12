@@ -16,6 +16,8 @@ export { StatTile, ListRow } from './StatTile';
 export { Segmented } from './Segmented';
 export { BrandMark } from './BrandMark';
 export {
+  AllotmentCheckResults,
+  type AllotmentCheckResultTone,
   Badge,
   Banner,
   EmptyState,

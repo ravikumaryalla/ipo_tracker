@@ -5,6 +5,8 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import {
+  AllotmentCheckResults,
+  type AllotmentCheckResultTone,
   Badge,
   Banner,
   Button,
@@ -18,7 +20,7 @@ import {
   Segmented,
 } from '../../components/ui';
 import { colors, formatInr, motion, radius, spacing, type } from '../../constants/theme';
-import { checkAllotments } from '../../lib/db/allotment';
+import { checkAllotmentsForIpo, type BulkAllotmentCheck } from '../../lib/db/allotment';
 import { listApplications } from '../../lib/db/applications';
 import type { ApplicationPnl, ApplicationStatus } from '../../lib/types';
 
@@ -73,6 +75,11 @@ function outcomeLabel(a: OutcomeFields): string {
   return a.status.replace('_', ' ').toLowerCase();
 }
 
+function outcomeTone(status: ApplicationStatus): AllotmentCheckResultTone {
+  if (status === 'ALLOTTED' || status === 'PARTIAL') return 'success';
+  return 'neutral';
+}
+
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString('en-IN', {
     day: 'numeric',
@@ -86,7 +93,7 @@ export default function ApplicationsTab() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<Filter>('all');
-  const [checkResults, setCheckResults] = useState<Record<string, string>>({});
+  const [checkResults, setCheckResults] = useState<Record<string, BulkAllotmentCheck>>({});
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
 
   const rows = applications.data ?? [];
@@ -116,19 +123,12 @@ export default function ApplicationsTab() {
 
   const check = useMutation({
     mutationFn: async ({ ipoId, ids }: { ipoId: string; ids: string[] }) => {
-      const outcomes = await checkAllotments(ids);
-      return { ipoId, outcomes };
+      const outcome = await checkAllotmentsForIpo(ipoId, ids);
+      return { ipoId, outcome };
     },
-    onSuccess: async ({ ipoId, outcomes }) => {
-      await queryClient.invalidateQueries({ queryKey: ['applications'] });
-      const group = groups.find((g) => g[0].ipo_id === ipoId) ?? [];
-      const lines = outcomes.map(({ id, result }) => {
-        const nickname = group.find((r) => r.id === id)?.account_nickname ?? id;
-        if (result.status === 'fulfilled') return `${nickname}: ${outcomeLabel(result.value)}`;
-        const reason = result.reason instanceof Error ? result.reason.message : 'Could not check.';
-        return `${nickname}: ${reason}`;
-      });
-      setCheckResults((prev) => ({ ...prev, [ipoId]: lines.join('\n') }));
+    onSuccess: async ({ ipoId, outcome }) => {
+      if (outcome.matched) await queryClient.invalidateQueries({ queryKey: ['applications'] });
+      setCheckResults((prev) => ({ ...prev, [ipoId]: outcome }));
     },
   });
 
@@ -265,7 +265,11 @@ export default function ApplicationsTab() {
                       title="Check status"
                       variant="secondary"
                       onPress={() => {
-                        setCheckResults((prev) => ({ ...prev, [first.ipo_id]: '' }));
+                        setCheckResults((prev) => {
+                          const next = { ...prev };
+                          delete next[first.ipo_id];
+                          return next;
+                        });
                         check.mutate({ ipoId: first.ipo_id, ids: eligible.map((r) => r.id) });
                       }}
                       loading={checking}
@@ -275,7 +279,32 @@ export default function ApplicationsTab() {
                         Last checked {formatDateTime(lastChecked)}
                       </Text>
                     )}
-                    {result ? <Banner tone="info">{result}</Banner> : null}
+                    {result && !result.matched && (
+                      <Banner tone="warning">{result.message}</Banner>
+                    )}
+                    {result && result.matched && (
+                      <View style={{ marginTop: spacing.md }}>
+                        <AllotmentCheckResults
+                          results={result.results.map(({ id, result: r }) => {
+                            const nickname = group.find((row) => row.id === id)?.account_nickname ?? id;
+                            if (r.status === 'fulfilled') {
+                              return {
+                                id,
+                                label: nickname,
+                                message: outcomeLabel(r.value),
+                                tone: outcomeTone(r.value.status),
+                              };
+                            }
+                            return {
+                              id,
+                              label: nickname,
+                              message: r.reason instanceof Error ? r.reason.message : 'Could not check.',
+                              tone: 'warning' as const,
+                            };
+                          })}
+                        />
+                      </View>
+                    )}
                   </View>
                 )}
               </Card>

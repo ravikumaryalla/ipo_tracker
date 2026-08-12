@@ -89,6 +89,48 @@ export function Banner({
   );
 }
 
+export type AllotmentCheckResultTone = 'success' | 'neutral' | 'warning';
+
+/**
+ * One row per account after a bulk allotment check — a colored dot plus the
+ * account and its outcome, instead of joining every account's message into
+ * one flat paragraph of text where an allotted account reads no different
+ * from an error.
+ */
+export function AllotmentCheckResults({
+  results,
+}: {
+  results: { id: string; label: string; message: string; tone: AllotmentCheckResultTone }[];
+}) {
+  const dotColor: Record<AllotmentCheckResultTone, string> = {
+    success: colors.success,
+    neutral: colors.textFaint,
+    warning: colors.warning,
+  };
+  const textColor: Record<AllotmentCheckResultTone, string> = {
+    success: colors.success,
+    neutral: colors.textMuted,
+    warning: colors.warning,
+  };
+
+  return (
+    <View style={styles.resultList}>
+      {results.map((r, i) => (
+        <View
+          key={r.id}
+          style={[styles.resultRow, i === results.length - 1 && { borderBottomWidth: 0 }]}
+        >
+          <View style={[styles.resultDot, { backgroundColor: dotColor[r.tone] }]} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.resultLabel}>{r.label}</Text>
+            <Text style={[styles.resultMessage, { color: textColor[r.tone] }]}>{r.message}</Text>
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 export function EmptyState({
   title,
   body,
@@ -186,6 +228,25 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   bannerText: { ...type.caption, flex: 1, fontSize: 13 },
+  resultList: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+  },
+  resultRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.md,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSoft,
+  },
+  resultDot: { width: 8, height: 8, borderRadius: 4, marginTop: 6 },
+  resultLabel: { ...type.bodyStrong, color: colors.text, fontSize: 13 },
+  resultMessage: { ...type.caption, fontSize: 12.5, marginTop: 2 },
   empty: { alignItems: 'center', paddingVertical: spacing.xxxl, paddingHorizontal: spacing.xl },
   emptyIcon: {
     width: 64,
