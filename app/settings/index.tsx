@@ -57,7 +57,7 @@ export default function Settings() {
         setNotice('Biometric unlock is on.');
       } else {
         await disableBiometrics();
-        setNotice('Biometric unlock is off. You will need your passphrase each time.');
+        setNotice('Biometric unlock is off. You will need your PIN each time.');
       }
     } catch (e) {
       // Most likely the OEM refused a Keystore entry gated on authentication.
@@ -150,9 +150,9 @@ export default function Settings() {
         <View style={{ marginTop: spacing.lg }}>
           <Button title="Lock vault now" icon="lock" variant="secondary" onPress={lock} />
           <Button
-            title="Change master passphrase"
+            title="Change PIN"
             variant="secondary"
-            onPress={() => router.push('/settings/change-passphrase')}
+            onPress={() => router.push('/settings/change-pin')}
           />
         </View>
       </Card>

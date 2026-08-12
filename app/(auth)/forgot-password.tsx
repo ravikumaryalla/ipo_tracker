@@ -38,8 +38,8 @@ export default function ForgotPassword() {
       />
 
       <Banner tone="warning">
-        This resets your sign-in password only. Your master passphrase is never sent to the server,
-        so it cannot be reset this way — use your recovery code if you have lost it.
+        This resets your sign-in password only. Your PIN is never sent to the server, so it cannot
+        be reset this way — use your recovery code if you have lost it.
       </Banner>
 
       {sent ? (

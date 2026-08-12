@@ -17,7 +17,7 @@ Two secrets that never mix:
 
 ```
 login password   ──► Supabase Auth ──► JWT + refresh token
-master passphrase ─► Argon2id(64 MiB, t=3, per-user salt) ─► vault key (32 bytes)
+vault PIN        ─► Argon2id(64 MiB, t=3, per-user salt) ─► vault key (32 bytes)
                         │
                         └─► XChaCha20-Poly1305 ─► base64(nonce ‖ ciphertext)
                                                         ↓
@@ -28,9 +28,9 @@ Properties this buys, and where they are enforced:
 
 | Property | Where |
 |---|---|
-| Master passphrase never leaves the device | `lib/crypto/primitives.ts` |
+| Vault PIN never leaves the device | `lib/crypto/primitives.ts` |
 | Only `lib/db/accounts.ts` converts plaintext ⇄ ciphertext | enforced by module boundary + tests |
-| Wrong passphrase detected immediately | `vault_verifier` in `profiles` |
+| Wrong PIN detected immediately | `vault_verifier` in `profiles` |
 | Cached key sits in the Android Keystore behind biometrics | `lib/crypto/secureStore.ts` |
 | Auto-lock on foreground after N minutes idle | `lib/vault.tsx` |
 | Plaintext never written to AsyncStorage | `shouldDehydrateQuery` in `app/_layout.tsx` |
@@ -39,7 +39,7 @@ Properties this buys, and where they are enforced:
 | Clipboard cleared 30s after a copy | `components/SecretField.tsx` |
 | Second line of defence if encryption were bypassed | RLS, `supabase/migrations/…_rls.sql` |
 
-**Losing the master passphrase means losing the encrypted data.** The printable recovery
+**Losing the vault PIN means losing the encrypted data.** The printable recovery
 code generated at setup is the only way back in.
 
 ---
@@ -146,7 +146,7 @@ returns zero rows belonging to the first.
 ```
 app/                      expo-router screens
   (auth)/                 sign-in, sign-up, forgot-password
-  vault/                  setup (passphrase + recovery code), unlock
+  vault/                  setup (PIN + recovery code), unlock
   (tabs)/                 dashboard, accounts, ipos, applications
   accounts/ ipos/ applications/ settings/
 lib/

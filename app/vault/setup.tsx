@@ -3,11 +3,11 @@
  *
  * Three steps, in this order on purpose:
  *   1. warn  — make the irreversibility impossible to miss, and require a tap
- *   2. set   — choose the passphrase
+ *   2. set   — choose the PIN
  *   3. code  — show the recovery code exactly once
  *
  * The user cannot reach the app until step 3 is acknowledged, because that code
- * is the only way back in if the passphrase is forgotten.
+ * is the only way back in if the PIN is forgotten.
  */
 import * as Clipboard from 'expo-clipboard';
 import * as ScreenCapture from 'expo-screen-capture';
@@ -20,22 +20,6 @@ import { colors, fonts, radius, spacing, type } from '../../constants/theme';
 import { useVault } from '../../lib/vault';
 
 type Step = 'warn' | 'set' | 'code';
-
-/** Rough strength signal — length dominates, variety helps. Not a policy gate. */
-function strengthOf(passphrase: string): { score: 0 | 1 | 2 | 3; label: string; tone: string } {
-  const variety =
-    Number(/[a-z]/.test(passphrase)) +
-    Number(/[A-Z]/.test(passphrase)) +
-    Number(/[0-9]/.test(passphrase)) +
-    Number(/[^A-Za-z0-9]/.test(passphrase));
-
-  if (passphrase.length < 10) return { score: 0, label: 'Too short', tone: colors.danger };
-  if (passphrase.length >= 20 || (passphrase.length >= 16 && variety >= 3))
-    return { score: 3, label: 'Strong', tone: colors.success };
-  if (passphrase.length >= 14 || variety >= 3)
-    return { score: 2, label: 'Good', tone: colors.warning };
-  return { score: 1, label: 'Weak', tone: colors.warning };
-}
 
 export default function VaultSetup() {
   const { initialise } = useVault();
@@ -58,15 +42,13 @@ export default function VaultSetup() {
     };
   }, [step]);
 
-  const strength = strengthOf(passphrase);
-
   async function onCreate() {
     // The confirm field's "go" key can fire while a derivation is already
     // running; a second concurrent Argon2 run would double the stall.
     if (busy) return;
     setError(null);
-    if (passphrase.length < 10) return setError('Use at least 10 characters.');
-    if (passphrase !== confirm) return setError('The two passphrases do not match.');
+    if (!/^\d{6}$/.test(passphrase)) return setError('Use a 6-digit PIN.');
+    if (passphrase !== confirm) return setError('The two PINs do not match.');
 
     setBusy(true);
     try {
@@ -88,21 +70,21 @@ export default function VaultSetup() {
         <BrandMark
           icon="shield"
           title="Set up your vault"
-          subtitle="One more password — this is the one that actually protects your demat logins."
+          subtitle="One more code — this is the one that actually protects your demat logins."
         />
 
         <Card>
           <Text style={styles.point}>
             Your demat passwords are encrypted on this phone before they are saved. The server
-            stores only scrambled data and never sees your master passphrase.
+            stores only scrambled data and never sees your PIN.
           </Text>
           <Text style={[styles.point, { color: colors.warning, fontFamily: fonts.bodySemi }]}>
-            That also means nobody can reset it for you. If you forget this passphrase and lose your
+            That also means nobody can reset it for you. If you forget this PIN and lose your
             recovery code, the stored passwords are gone for good.
           </Text>
           <Text style={styles.point}>
-            Pick something long that you will not forget, and keep the recovery code we show you
-            next somewhere safe and offline.
+            Pick a PIN you will not forget, and keep the recovery code we show you next somewhere
+            safe and offline.
           </Text>
         </Card>
 
@@ -116,32 +98,29 @@ export default function VaultSetup() {
       <Screen style={{ justifyContent: 'center', minHeight: '100%', paddingHorizontal: spacing.xl }}>
         <BrandMark
           icon="key"
-          title="Choose your master passphrase"
-          subtitle="Long beats complicated. A phrase of four or five unusual words works well."
+          title="Choose your 6-digit PIN"
+          subtitle="You will enter this to unlock your vault."
         />
 
         <ErrorText>{error}</ErrorText>
 
         <Field
-          label="Master passphrase"
+          label="6-digit PIN"
           value={passphrase}
-          onChangeText={setPassphrase}
+          onChangeText={(v) => setPassphrase(v.replace(/\D/g, '').slice(0, 6))}
           secureTextEntry
-          autoCapitalize="none"
-          placeholder="At least 10 characters"
+          keyboardType="number-pad"
+          maxLength={6}
+          placeholder="000000"
         />
-        {passphrase.length > 0 && (
-          <Text style={{ ...type.caption, color: strength.tone, fontSize: 13, marginTop: -spacing.md, marginBottom: spacing.lg }}>
-            {strength.label}
-          </Text>
-        )}
 
         <Field
-          label="Confirm passphrase"
+          label="Confirm PIN"
           value={confirm}
-          onChangeText={setConfirm}
+          onChangeText={(v) => setConfirm(v.replace(/\D/g, '').slice(0, 6))}
           secureTextEntry
-          autoCapitalize="none"
+          keyboardType="number-pad"
+          maxLength={6}
           onSubmitEditing={onCreate}
         />
 
@@ -153,7 +132,7 @@ export default function VaultSetup() {
         {busy && (
           <Text style={{ ...type.caption, color: colors.textFaint, textAlign: 'center' }}>
             Deriving your key. This takes a few seconds by design — it is what makes guessing your
-            passphrase expensive.
+            PIN expensive.
           </Text>
         )}
         <Button title="Back" variant="ghost" onPress={() => setStep('warn')} />
@@ -183,9 +162,9 @@ export default function VaultSetup() {
       />
 
       <Banner tone="warning">
-        This code can unlock your vault without the passphrase. Treat it like the passphrase itself:
-        offline, on paper or in a different password manager — not in this app, and not in the same
-        place you keep your phone.
+        This code can unlock your vault without the PIN. Treat it like the PIN itself: offline, on
+        paper or in a different password manager — not in this app, and not in the same place you
+        keep your phone.
       </Banner>
 
       <Pressable

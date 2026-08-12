@@ -6,7 +6,7 @@
  * readable by other apps or by an adb backup.
  *
  * The cached key is a convenience only: it lets biometrics stand in for
- * retyping the master passphrase. It is always erasable, and sign-out wipes it.
+ * retyping the PIN. It is always erasable, and sign-out wipes it.
  */
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
@@ -27,7 +27,7 @@ const BIOMETRICS_ENABLED_SLOT = 'ipo_tracker.biometrics_enabled';
  * On web we therefore report "no biometrics, nothing cached" and refuse to
  * store the key at all. A browser has no Keystore equivalent, and localStorage
  * would mean writing the vault key to disk in plaintext — exactly what this
- * app exists to avoid. Web preview is passphrase-only by design.
+ * app exists to avoid. Web preview is PIN-only by design.
  */
 const isWeb = Platform.OS === 'web';
 
@@ -76,7 +76,7 @@ export async function getBiometricSupport(): Promise<BiometricSupport> {
 export async function authenticateWithBiometrics(reason = 'Unlock your vault'): Promise<boolean> {
   const result = await LocalAuthentication.authenticateAsync({
     promptMessage: reason,
-    cancelLabel: 'Use passphrase',
+    cancelLabel: 'Use PIN',
     disableDeviceFallback: false,
   });
   return result.success;
@@ -123,7 +123,7 @@ export async function readCachedVaultKey(): Promise<Uint8Array | null> {
     });
     return stored ? fromBase64(stored) : null;
   } catch {
-    // Cancelled prompt or invalidated key — the passphrase path still works.
+    // Cancelled prompt or invalidated key — the PIN path still works.
     return null;
   }
 }

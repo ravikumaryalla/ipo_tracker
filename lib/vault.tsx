@@ -43,7 +43,7 @@ export type VaultStatus =
   | 'loading'
   /** The profile read failed (usually offline). Retry via refresh(). */
   | 'error'
-  /** No passphrase has ever been set; the user must create one. */
+  /** No PIN has ever been set; the user must create one. */
   | 'uninitialised'
   /** A vault exists but we don't hold the key. */
   | 'locked'
@@ -54,14 +54,14 @@ type VaultContextValue = {
   status: VaultStatus;
   autoLockMinutes: number;
   biometricsEnabled: boolean;
-  /** Throws with a friendly message if the passphrase is wrong. */
+  /** Throws with a friendly message if the PIN is wrong. */
   unlock: (passphrase: string) => Promise<void>;
   unlockWithBiometrics: () => Promise<boolean>;
   /** First-run setup. Returns the recovery code, which is shown exactly once. */
   initialise: (passphrase: string) => Promise<string>;
   unlockWithRecoveryCode: (code: string) => Promise<void>;
   /**
-   * Re-key the vault. Requires the current passphrase (or an unlocked vault
+   * Re-key the vault. Requires the current PIN (or an unlocked vault
    * reached via recovery code). Returns a fresh recovery code — the old one
    * stops working.
    */
@@ -172,8 +172,8 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
 
   const initialise = useCallback<VaultContextValue['initialise']>(
     async (passphrase) => {
-      if (passphrase.length < 10) {
-        throw new Error('Use at least 10 characters — this passphrase protects every password.');
+      if (!/^\d{6}$/.test(passphrase)) {
+        throw new Error('Use a 6-digit PIN.');
       }
 
       const salt = generateSalt();
@@ -203,7 +203,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     const key = await deriveVaultKey(passphrase, profile.vault_salt);
     if (!checkVerifier(key, profile.vault_verifier)) {
       wipe(key);
-      throw new Error('That passphrase is not correct.');
+      throw new Error('That PIN is not correct.');
     }
 
     keyRef.current = key;
@@ -222,7 +222,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     if (!key) return false;
 
     if (!checkVerifier(key, profile.vault_verifier)) {
-      // Stale cache — e.g. the passphrase was changed on another device.
+      // Stale cache — e.g. the PIN was changed on another device.
       wipe(key);
       await clearCachedVaultKey();
       setBiometricsEnabled(false);
@@ -273,18 +273,18 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       if (!profile?.vault_salt || !profile.vault_verifier) {
         throw new Error('No vault has been set up on this account yet.');
       }
-      if (nextPassphrase.length < 10) {
-        throw new Error('Use at least 10 characters for the new passphrase.');
+      if (!/^\d{6}$/.test(nextPassphrase)) {
+        throw new Error('Use a 6-digit PIN.');
       }
 
-      // Establish the old key. Either re-derive it from the passphrase the user
-      // just typed, or use the live one if they got in with a recovery code.
+      // Establish the old key. Either re-derive it from the PIN the user just
+      // typed, or use the live one if they got in with a recovery code.
       let oldKey: Uint8Array;
       if (currentPassphrase !== null) {
         oldKey = await deriveVaultKey(currentPassphrase, profile.vault_salt);
         if (!checkVerifier(oldKey, profile.vault_verifier)) {
           wipe(oldKey);
-          throw new Error('Your current passphrase is not correct.');
+          throw new Error('Your current PIN is not correct.');
         }
       } else {
         const live = keyRef.current;

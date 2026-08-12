@@ -240,7 +240,7 @@ export async function deleteAccount(id: string): Promise<void> {
 }
 
 /**
- * Re-encrypt every account under a new key. Used by the change-passphrase flow.
+ * Re-encrypt every account under a new key. Used by the change-PIN flow.
  *
  * Rows are rewritten one at a time; a partial failure leaves earlier rows on the
  * new key and later rows on the old one, so the caller must only swap the

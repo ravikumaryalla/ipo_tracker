@@ -1,7 +1,7 @@
 /**
  * The lock screen. Reached on cold start, after auto-lock, and after a manual
- * lock. Offers biometrics when they are set up, passphrase always, and the
- * recovery code as the last resort.
+ * lock. Offers biometrics when they are set up, PIN always, and the recovery
+ * code as the last resort.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
@@ -44,7 +44,7 @@ export default function VaultUnlock() {
     setBusy(true);
     try {
       const ok = await unlockWithBiometrics();
-      if (!ok) setError('Biometric unlock did not work. Use your passphrase.');
+      if (!ok) setError('Biometric unlock did not work. Use your PIN.');
     } finally {
       setBusy(false);
     }
@@ -60,7 +60,7 @@ export default function VaultUnlock() {
   async function onUnlock() {
     if (busy) return;
     setError(null);
-    if (!passphrase) return setError('Enter your master passphrase.');
+    if (!passphrase) return setError('Enter your PIN.');
     setBusy(true);
     try {
       await unlock(passphrase);
@@ -100,8 +100,8 @@ export default function VaultUnlock() {
       {showRecovery ? (
         <>
           <Banner tone="warning">
-            Use this only if you have forgotten your passphrase. After unlocking, set a new
-            passphrase in Settings.
+            Use this only if you have forgotten your PIN. After unlocking, set a new PIN in
+            Settings.
           </Banner>
           <Field
             label="Recovery code"
@@ -117,11 +117,12 @@ export default function VaultUnlock() {
       ) : (
         <>
           <Field
-            label="Master passphrase"
+            label="PIN"
             value={passphrase}
-            onChangeText={setPassphrase}
+            onChangeText={(v) => setPassphrase(v.replace(/\D/g, '').slice(0, 6))}
             secureTextEntry
-            autoCapitalize="none"
+            keyboardType="number-pad"
+            maxLength={6}
             autoFocus={!biometricsEnabled}
             onSubmitEditing={onUnlock}
             returnKeyType="go"
@@ -145,7 +146,7 @@ export default function VaultUnlock() {
           )}
 
           <Button
-            title="I forgot my passphrase"
+            title="I forgot my PIN"
             variant="ghost"
             onPress={() => setShowRecovery(true)}
           />

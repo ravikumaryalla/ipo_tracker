@@ -63,7 +63,7 @@ export default function SignUp() {
         />
 
         <Banner tone="info">
-          This password signs you in. In the next step you will set a separate master passphrase
+          This password signs you in. In the next step you will set a separate 6-digit PIN
           that encrypts your demat passwords — they are deliberately kept apart.
         </Banner>
 

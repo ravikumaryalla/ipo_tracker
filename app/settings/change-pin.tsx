@@ -1,5 +1,5 @@
 /**
- * Change the master passphrase.
+ * Change the vault PIN.
  *
  * This re-encrypts every stored credential on the device under a new key, so it
  * is genuinely destructive if interrupted — the screen says so, and the vault
@@ -17,7 +17,7 @@ import { Banner, Button, Card, ErrorText, Field, Heading, Screen } from '../../c
 import { colors, fonts, spacing } from '../../constants/theme';
 import { useVault } from '../../lib/vault';
 
-export default function ChangePassphrase() {
+export default function ChangePin() {
   const { changePassphrase } = useVault();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -40,10 +40,10 @@ export default function ChangePassphrase() {
   async function onSubmit() {
     if (busy) return;
     setError(null);
-    if (!current) return setError('Enter your current passphrase.');
-    if (next.length < 10) return setError('The new passphrase needs at least 10 characters.');
-    if (next !== confirm) return setError('The two new passphrases do not match.');
-    if (next === current) return setError('The new passphrase is the same as the current one.');
+    if (!current) return setError('Enter your current PIN.');
+    if (!/^\d{6}$/.test(next)) return setError('The new PIN must be 6 digits.');
+    if (next !== confirm) return setError('The two new PINs do not match.');
+    if (next === current) return setError('The new PIN is the same as the current one.');
 
     setBusy(true);
     try {
@@ -55,7 +55,7 @@ export default function ChangePassphrase() {
       setConfirm('');
       setNewCode(code);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not change your passphrase.');
+      setError(e instanceof Error ? e.message : 'Could not change your PIN.');
     } finally {
       setBusy(false);
     }
@@ -64,7 +64,7 @@ export default function ChangePassphrase() {
   if (newCode) {
     return (
       <Screen>
-        <Heading sub="Your passphrase has been changed and every stored credential re-encrypted.">
+        <Heading sub="Your PIN has been changed and every stored credential re-encrypted.">
           Done
         </Heading>
 
@@ -92,42 +92,45 @@ export default function ChangePassphrase() {
 
   return (
     <Screen>
-      <Heading sub="Every stored credential is decrypted and re-encrypted under the new passphrase.">
-        Change master passphrase
+      <Heading sub="Every stored credential is decrypted and re-encrypted under the new PIN.">
+        Change PIN
       </Heading>
 
       <Banner tone="warning">
         Stay on this screen until it finishes. If it is interrupted partway, sign back in and run it
-        again with the same current passphrase — your data is not lost, but the retry is required.
+        again with the same current PIN — your data is not lost, but the retry is required.
       </Banner>
 
       <ErrorText>{error}</ErrorText>
 
       <Field
-        label="Current passphrase"
+        label="Current PIN"
         value={current}
-        onChangeText={setCurrent}
+        onChangeText={(v) => setCurrent(v.replace(/\D/g, '').slice(0, 6))}
         secureTextEntry
-        autoCapitalize="none"
+        keyboardType="number-pad"
+        maxLength={6}
       />
       <Field
-        label="New passphrase"
+        label="New PIN"
         value={next}
-        onChangeText={setNext}
+        onChangeText={(v) => setNext(v.replace(/\D/g, '').slice(0, 6))}
         secureTextEntry
-        autoCapitalize="none"
-        hint="At least 10 characters."
+        keyboardType="number-pad"
+        maxLength={6}
+        hint="6 digits."
       />
       <Field
-        label="Confirm new passphrase"
+        label="Confirm new PIN"
         value={confirm}
-        onChangeText={setConfirm}
+        onChangeText={(v) => setConfirm(v.replace(/\D/g, '').slice(0, 6))}
         secureTextEntry
-        autoCapitalize="none"
+        keyboardType="number-pad"
+        maxLength={6}
       />
 
       <Button
-        title={busy ? 'Re-encrypting…' : 'Change passphrase'}
+        title={busy ? 'Re-encrypting…' : 'Change PIN'}
         onPress={onSubmit}
         loading={busy}
       />

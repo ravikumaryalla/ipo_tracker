@@ -211,8 +211,8 @@ export default function RootLayout() {
               <Stack.Screen name="applications/[id]" options={{ title: 'Application' }} />
               <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
               <Stack.Screen
-                name="settings/change-passphrase"
-                options={{ title: 'Change passphrase' }}
+                name="settings/change-pin"
+                options={{ title: 'Change PIN' }}
               />
             </Stack>
           </RouteGate>
