@@ -116,19 +116,38 @@ type CheckResult = {
   message?: string;
 };
 
+/**
+ * Stamp allotment_checked_at without touching status/shares_allotted — for a
+ * "not yet" outcome nothing definitive is known, but the attempt still
+ * happened and "Last checked" needs to reflect that (otherwise an on-demand
+ * check that comes back inconclusive looks like it never ran).
+ */
+async function touchCheckedAt(client: SupabaseClient, id: string): Promise<void> {
+  await client
+    .from('ipo_applications')
+    .update({ allotment_checked_at: new Date().toISOString() })
+    .eq('id', id);
+}
+
 async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResult> {
   try {
     const res = await fetch(KFINTECH_QUERY_URL, {
       headers: { ...BROWSER_HEADERS, reqparam: row.pan, client_id: row.companyId },
     });
 
-    if (res.status === 404) return { row, outcome: 'not-yet' };
+    if (res.status === 404) {
+      await touchCheckedAt(client, row.id);
+      return { row, outcome: 'not-yet' };
+    }
     if (res.status === 429) throw new Error('KFintech is rate-limiting allotment checks');
     if (!res.ok) throw new Error(`KFintech allotment check responded ${res.status}`);
 
     const body = await res.json().catch(() => null);
     const matches = parseKfintechAllotmentBody(body);
-    if (!matches) return { row, outcome: 'not-yet' };
+    if (!matches) {
+      await touchCheckedAt(client, row.id);
+      return { row, outcome: 'not-yet' };
+    }
 
     const match = pickMatch(matches, row.application_no);
     const status: AllotmentOutcome = statusFor(match, row.shares_applied);
