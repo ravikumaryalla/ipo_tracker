@@ -13,6 +13,7 @@ import { QueryClient, defaultShouldDehydrateQuery } from '@tanstack/react-query'
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
+import * as Notifications from 'expo-notifications';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -77,6 +78,17 @@ function RouteGate({ children }: { children: React.ReactNode }) {
       });
     }
   }, [status]);
+
+  // Tapping an allotment-result push opens that application directly. The
+  // route gate above still runs first (e.g. redirects to unlock if locked),
+  // this just decides where to land once past it.
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const applicationId = response.notification.request.content.data?.applicationId;
+      if (typeof applicationId === 'string') router.push(`/applications/${applicationId}`);
+    });
+    return () => sub.remove();
+  }, [router]);
 
   useEffect(() => {
     if (authLoading) return;

@@ -177,6 +177,13 @@ export type SyncLogRow = {
   ran_at: string;
 };
 
+export type PushTokenRow = {
+  id: string;
+  user_id: string;
+  token: string;
+  created_at: string;
+};
+
 /**
  * One grey market premium reading. Unofficial, unregulated data — anything
  * rendering it must say so. `ipo_id` is null while a reading has not been
@@ -217,6 +224,7 @@ export type Database = {
       ipo_applications: TableShape<IpoApplication>;
       credential_history: TableShape<CredentialHistoryRow>;
       sync_log: TableShape<SyncLogRow>;
+      push_tokens: TableShape<PushTokenRow>;
     };
     Views: {
       v_application_pnl: { Row: ApplicationPnl; Relationships: [] };

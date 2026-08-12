@@ -10,6 +10,7 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from '
 import { AppState } from 'react-native';
 
 import { clearCachedVaultKey } from './crypto/secureStore';
+import { disablePushNotifications } from './notifications';
 import { supabase } from './supabase';
 
 type AuthContextValue = {
@@ -81,9 +82,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
 
       async signOut() {
-        // Wipe the cached vault key before dropping the session, so a crash
-        // mid-sign-out can never leave the key behind for the next account.
+        // Wipe the cached vault key and this device's push-token row before
+        // dropping the session — both must happen while the session (and
+        // therefore RLS's auth.uid()) is still valid, and a crash mid-sign-out
+        // must never leave either behind for the next account on this device.
         await clearCachedVaultKey();
+        await disablePushNotifications().catch(() => undefined);
         const { error } = await supabase.auth.signOut();
         if (error) throw error;
       },

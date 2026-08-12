@@ -13,7 +13,13 @@ import {
 } from '../../lib/crypto/secureStore';
 import { listApplications } from '../../lib/db/applications';
 import { listIpos } from '../../lib/db/ipos';
-import { cancelAllReminders, syncReminders } from '../../lib/notifications';
+import {
+  cancelAllReminders,
+  disablePushNotifications,
+  enablePushNotifications,
+  isPushEnabled,
+  syncReminders,
+} from '../../lib/notifications';
 import { useVault } from '../../lib/vault';
 
 const AUTO_LOCK_CHOICES = [
@@ -26,7 +32,7 @@ const AUTO_LOCK_CHOICES = [
 
 export default function Settings() {
   const router = useRouter();
-  const { session, signOut } = useAuth();
+  const { session, userId, signOut } = useAuth();
   const {
     autoLockMinutes,
     setAutoLockMinutes,
@@ -40,6 +46,8 @@ export default function Settings() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
 
   const ipos = useQuery({ queryKey: ['ipos'], queryFn: listIpos });
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
@@ -47,6 +55,35 @@ export default function Settings() {
   useEffect(() => {
     getBiometricSupport().then(setSupport).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    isPushEnabled().then(setPushEnabled).catch(() => undefined);
+  }, []);
+
+  async function togglePush(next: boolean) {
+    if (!userId) return;
+    setError(null);
+    setPushBusy(true);
+    try {
+      if (next) {
+        const ok = await enablePushNotifications(userId);
+        setPushEnabled(ok);
+        setNotice(
+          ok
+            ? 'You will be notified when an allotment result is out.'
+            : 'Could not enable push notifications on this device.',
+        );
+      } else {
+        await disablePushNotifications();
+        setPushEnabled(false);
+        setNotice('Allotment result notifications are off.');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not change notification settings.');
+    } finally {
+      setPushBusy(false);
+    }
+  }
 
   async function toggleBiometrics(next: boolean) {
     setError(null);
@@ -172,6 +209,22 @@ export default function Settings() {
               await cancelAllReminders();
               setNotice('All reminders cancelled.');
             }}
+          />
+        </View>
+
+        <View style={[styles.switchRow, { marginTop: spacing.lg }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rowLabel}>Notify me when a result is out</Text>
+            <Text style={styles.rowHint}>
+              A push notification the moment an allotment result resolves for an IPO you applied
+              to — even if the app is closed.
+            </Text>
+          </View>
+          <Switch
+            value={pushEnabled}
+            onValueChange={togglePush}
+            disabled={pushBusy || !userId}
+            trackColor={{ true: colors.accent, false: colors.border }}
           />
         </View>
       </Card>

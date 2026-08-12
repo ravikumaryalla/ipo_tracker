@@ -63,15 +63,18 @@ const KFINTECH_QUERY_URL = 'https://0uz601ms56.execute-api.ap-south-1.amazonaws.
 
 type CandidateRow = {
   id: string;
+  user_id: string;
   shares_applied: number;
   application_no: string | null;
-  ipos: { kfintech_company_id: string | null; allotment_date: string | null } | null;
+  ipos: { company_name: string; kfintech_company_id: string | null; allotment_date: string | null } | null;
   demat_accounts: { pan: string | null } | null;
 };
 
 /** A CandidateRow that has passed the null/due checks — every field we need is present. */
 type DueRow = {
   id: string;
+  userId: string;
+  companyName: string;
   shares_applied: number;
   application_no: string | null;
   companyId: string;
@@ -82,7 +85,7 @@ async function loadCandidates(client: SupabaseClient): Promise<CandidateRow[]> {
   const { data, error } = await client
     .from('ipo_applications')
     .select(
-      'id, shares_applied, application_no, ipos(kfintech_company_id, allotment_date), demat_accounts(pan)',
+      'id, user_id, shares_applied, application_no, ipos(company_name, kfintech_company_id, allotment_date), demat_accounts(pan)',
     )
     .eq('status', 'APPLIED');
   if (error) throw error;
@@ -99,6 +102,8 @@ function dueRows(candidates: CandidateRow[], nowIso: string): DueRow[] {
     if (!isAllotmentCheckDue(allotmentDate, nowIso)) continue;
     due.push({
       id: row.id,
+      userId: row.user_id,
+      companyName: row.ipos?.company_name ?? 'your IPO',
       shares_applied: row.shares_applied,
       application_no: row.application_no,
       companyId,
@@ -185,11 +190,70 @@ async function loadCandidatesByIds(client: SupabaseClient, ids: string[]): Promi
   const { data, error } = await client
     .from('ipo_applications')
     .select(
-      'id, shares_applied, application_no, ipos(kfintech_company_id, allotment_date), demat_accounts(pan)',
+      'id, user_id, shares_applied, application_no, ipos(company_name, kfintech_company_id, allotment_date), demat_accounts(pan)',
     )
     .in('id', ids);
   if (error) throw error;
   return (data ?? []) as unknown as CandidateRow[];
+}
+
+// ---------------------------------------------------------------------------
+// push notifications — fired the instant a status resolves
+// ---------------------------------------------------------------------------
+
+const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
+const OUTCOME_TEXT: Record<AllotmentOutcome, string> = {
+  ALLOTTED: 'Allotted',
+  PARTIAL: 'Partially allotted',
+  NOT_ALLOTTED: 'Not allotted',
+};
+
+/**
+ * Best-effort: a push-delivery hiccup (Expo's service down, a stale/revoked
+ * token) must never fail the check itself — the row is already written by
+ * the time this runs.
+ */
+async function sendAllotmentPushes(
+  client: SupabaseClient,
+  results: CheckResult[],
+): Promise<void> {
+  const resolved = results.filter(
+    (r): r is CheckResult & { status: AllotmentOutcome } => r.outcome === 'resolved' && !!r.status,
+  );
+  if (resolved.length === 0) return;
+
+  try {
+    const userIds = [...new Set(resolved.map((r) => r.row.userId))];
+    const { data: tokenRows } = await client
+      .from('push_tokens')
+      .select('user_id, token')
+      .in('user_id', userIds);
+
+    const tokensByUser = new Map<string, string[]>();
+    for (const t of (tokenRows ?? []) as { user_id: string; token: string }[]) {
+      tokensByUser.set(t.user_id, [...(tokensByUser.get(t.user_id) ?? []), t.token]);
+    }
+
+    const messages = resolved.flatMap((r) =>
+      (tokensByUser.get(r.row.userId) ?? []).map((token) => ({
+        to: token,
+        title: 'Allotment result is out',
+        body: `${r.row.companyName}: ${OUTCOME_TEXT[r.status]}`,
+        sound: 'default',
+        channelId: 'allotment-results',
+        data: { applicationId: r.row.id },
+      })),
+    );
+    if (messages.length === 0) return;
+
+    await fetch(EXPO_PUSH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(messages),
+    });
+  } catch {
+    // Never let a push failure surface as a check failure.
+  }
 }
 
 /**
@@ -262,7 +326,15 @@ async function handleOnDemand(req: Request, requestedIds: string[]): Promise<Res
       });
       continue;
     }
-    checkable.push({ id: row.id, shares_applied: row.shares_applied, application_no: row.application_no, companyId, pan });
+    checkable.push({
+      id: row.id,
+      userId: row.user_id,
+      companyName: row.ipos?.company_name ?? 'your IPO',
+      shares_applied: row.shares_applied,
+      application_no: row.application_no,
+      companyId,
+      pan,
+    });
   }
 
   const checked = await Promise.all(checkable.map((row) => checkOne(serviceClient, row)));
@@ -276,6 +348,8 @@ async function handleOnDemand(req: Request, requestedIds: string[]): Promise<Res
       message: c.message,
     });
   }
+
+  await sendAllotmentPushes(serviceClient, checked);
 
   return new Response(JSON.stringify({ ok: true, results }, null, 2), {
     status: 200,
@@ -312,6 +386,8 @@ Deno.serve(async (req) => {
       if (result.outcome === 'resolved') resolved += 1;
       else if (result.outcome === 'error' && result.message) errors.push(result.message);
     }
+
+    await sendAllotmentPushes(client, results);
   } catch (e) {
     ok = false;
     errors.push(e instanceof Error ? e.message : String(e));
