@@ -221,6 +221,7 @@ export default function RootLayout() {
               <Stack.Screen name="ipos/new" options={{ title: 'Add IPO' }} />
               <Stack.Screen name="applications/new" options={{ title: 'New application' }} />
               <Stack.Screen name="applications/[id]" options={{ title: 'Application' }} />
+              <Stack.Screen name="applications/bulk-update" options={{ title: 'Update all' }} />
               <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
               <Stack.Screen
                 name="settings/change-pin"

@@ -325,6 +325,16 @@ export default function ApplicationsTab() {
                     )}
                   </View>
                 )}
+
+                {group.length > 1 && (
+                  <View style={{ marginTop: spacing.md }}>
+                    <Button
+                      title="Update all"
+                      variant="ghost"
+                      onPress={() => router.push(`/applications/bulk-update?ipoId=${first.ipo_id}`)}
+                    />
+                  </View>
+                )}
               </Card>
             </Animated.View>
           );
