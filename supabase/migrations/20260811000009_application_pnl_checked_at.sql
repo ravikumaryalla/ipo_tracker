@@ -23,7 +23,6 @@ select
   a.applied_at,
   a.sell_price,
   a.sold_at,
-  a.allotment_checked_at,
   i.symbol,
   i.company_name,
   i.segment,
@@ -52,7 +51,8 @@ select
     else 0
   end::numeric(14,2) as unrealised_pnl,
 
-  i.kfintech_company_id
+  i.kfintech_company_id,
+  a.allotment_checked_at
 
 from public.ipo_applications a
 join public.ipos i on i.id = a.ipo_id
