@@ -2,8 +2,8 @@
  * Tab navigation.
  *
  * The bar floats above the content rather than sitting in a docked strip: it is
- * inset from the edges, rounded, and translucent so the gradient ground shows
- * through. The active tab is marked by a gradient pill that grows behind the
+ * inset from the edges, rounded, and solid so scrolled content never shows
+ * through it. The active tab is marked by a gradient pill that grows behind the
  * icon, which is why each item animates its own indicator instead of the bar
  * sliding one shared marker — the pill has to size itself to its label.
  */
@@ -182,7 +182,7 @@ const styles = StyleSheet.create({
   },
   bar: {
     flexDirection: 'row',
-    backgroundColor: colors.surfaceGlassStrong,
+    backgroundColor: colors.surfaceRaised,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.borderSoft,

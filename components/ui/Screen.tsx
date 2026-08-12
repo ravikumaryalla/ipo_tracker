@@ -26,6 +26,9 @@ export function Screen({
 }) {
   const insets = useSafeAreaInsets();
   const bottomPad = spacing.xxl + (inset ? 72 + insets.bottom : 0);
+  // Routes rendering through Screen have no native header (those that do get
+  // status-bar clearance for free), so this is unconditional, not tied to `inset`.
+  const topPad = insets.top + spacing.lg;
 
   const backdrop = (
     <LinearGradient
@@ -36,11 +39,26 @@ export function Screen({
     />
   );
 
+  // Scrolled content would otherwise slide underneath the status bar (the app
+  // runs edge-to-edge, so the OS draws the clock/network/battery icons
+  // directly over whatever is there) — this opaque strip sits above the
+  // scroll content so later cards can never reach that row, not just the
+  // first one that `topPad` clears.
+  const statusBarShield = insets.top > 0 && (
+    <View
+      style={[styles.statusBarShield, { height: insets.top }]}
+      pointerEvents="none"
+    />
+  );
+
   if (!scroll) {
     return (
       <View style={styles.root}>
         {backdrop}
-        <View style={[styles.flat, { paddingBottom: bottomPad }, style]}>{children}</View>
+        <View style={[styles.flat, { paddingTop: topPad, paddingBottom: bottomPad }, style]}>
+          {children}
+        </View>
+        {statusBarShield}
       </View>
     );
   }
@@ -50,12 +68,17 @@ export function Screen({
       {backdrop}
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.content, { paddingBottom: bottomPad }, style]}
+        contentContainerStyle={[
+          styles.content,
+          { paddingTop: topPad, paddingBottom: bottomPad },
+          style,
+        ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         {children}
       </ScrollView>
+      {statusBarShield}
     </View>
   );
 }
@@ -65,4 +88,11 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   content: { padding: spacing.lg },
   flat: { flex: 1, padding: spacing.lg },
+  statusBarShield: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: gradients.ground[0],
+  },
 });
