@@ -38,18 +38,26 @@
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 
 import {
+  ipogyaniGmpRow,
+  type IpogyaniIpo,
+  ipogyaniIpoRow,
+  ipogyaniSlug,
+  priorIndex,
+  type RegistrarAssignment,
+  registrarAssignments,
+} from './ipogyani.ts';
+import {
   buildIpoIndexes,
   type GmpReading,
+  type IpoIndexes,
   type IpoRecord,
   ipowatchGmpRow,
   type IpowatchGmpRow,
   ipowatchIpoRow,
   type IpowatchListingRow,
-  mergeIpowatchDetail,
   normalizeName,
   parseDate,
   parseIpowatchGmpTable,
-  parseIpowatchIpoDetail,
   parseIpowatchListingTable,
   parseKfintechCompanies,
   parsePriceBand,
@@ -75,6 +83,12 @@ type ProviderResult = {
   records: IpoRecord[];
   /** slug → the (symbol, open_date) this provider actually upserted. */
   slugIndex?: Map<string, { symbol: string; open_date: string | null }>;
+  /**
+   * Registrars this provider learned, applied by applyRegistrars after the
+   * loop. Carried here rather than on IpoRecord so the shared upsert cannot
+   * null them out — see registrarAssignments in ipogyani.ts.
+   */
+  registrars?: RegistrarAssignment[];
 };
 
 /**
@@ -216,24 +230,60 @@ const fetchBse: Provider = async () => {
 // page's own DataTables footer reports "Showing N of N entries" for every
 // row, so a plain fetch already carries the full table.
 //
-// SME issues are dropped in parse.ts (ipowatchIpoRow/ipowatchGmpRow), which is
-// what makes the per-IPO detail fetch below affordable — roughly 10 Mainboard
-// issues in flight at a time rather than ~20 including SME.
+// SME issues are dropped in parse.ts (ipowatchIpoRow/ipowatchGmpRow).
+//
+// This provider USED TO also fetch every Mainboard IPO's own page, purely for
+// lot_size, issue_size_cr and allotment_date. That fan-out is gone: ipogyani
+// returns all three for every Mainboard issue inside one 39 KB JSON response,
+// where these pages cost 400-800 KB each. Together with the 891 KB GMP page
+// and the 548 KB listing page, a healthy ipowatch was pushing 5-9 MB of HTML
+// through the regex parsers per run and killing the worker outright
+// (WORKER_RESOURCE_LIMIT) — which took the working ipogyani legs down with it.
+// parseIpowatchIpoDetail and mergeIpowatchDetail are left in parse.ts, tested,
+// should that fallback ever be wanted back.
 //
 // The listing-date page is fetched separately from the GMP page purely to
 // attach listing_date and exchange symbols by company name; a failure there
 // degrades to null listing_date/symbols rather than failing the whole
 // provider, since the GMP page alone is enough to keep the IPO list current.
-// Same degrade-not-break treatment for the per-IPO detail fetch: one bad page
-// just leaves that IPO's lot_size/issue_size_cr/allotment_date null this run
-// instead of failing the whole sync.
 //
-// Runs last of the three, so its richer fields — listing_date above all, which
-// neither exchange supplies — win the upsert.
+// Runs after the two exchanges, so its richer fields — listing_date above all,
+// which neither exchange supplies — beat theirs in the upsert. It no longer
+// runs last: ipogyani below carries more still, and fills any gap this one
+// leaves rather than overwriting what it found.
 // ---------------------------------------------------------------------------
 
 const IPOWATCH_GMP_URL = 'https://ipowatch.in/ipo-grey-market-premium-latest-ipo-gmp/';
 const IPOWATCH_LISTING_URL = 'https://ipowatch.in/new-ipo-listing-today-ipo-listing-date/';
+
+/**
+ * The GMP page, fetched at most once per invocation.
+ *
+ * Two legs need it — the IPO-list provider and the GMP feed — and they used to
+ * fetch it separately so they could fail independently. That page is 891 KB,
+ * so doing it twice meant 1.8 MB downloaded and two full regex walks over it,
+ * which is what pushed this function past the Edge runtime's compute budget
+ * (WORKER_RESOURCE_LIMIT) once ipowatch came back from an outage.
+ *
+ * Sharing the promise keeps the independence that mattered: both legs still
+ * see the same failure and each still records its own sync_log row. Reset per
+ * request rather than given a TTL, so a warm isolate can never serve one run's
+ * page to the next.
+ */
+let ipowatchGmpHtml: Promise<string> | null = null;
+
+function fetchIpowatchGmpHtml(): Promise<string> {
+  if (!ipowatchGmpHtml) {
+    ipowatchGmpHtml = (async () => {
+      const res = await fetch(IPOWATCH_GMP_URL, {
+        headers: { ...BROWSER_HEADERS, Accept: 'text/html' },
+      });
+      if (!res.ok) throw new Error(`ipowatch GMP page responded ${res.status}`);
+      return await res.text();
+    })();
+  }
+  return ipowatchGmpHtml;
+}
 
 async function fetchIpowatchListingByName(): Promise<Map<string, IpowatchListingRow>> {
   try {
@@ -257,18 +307,6 @@ async function fetchIpowatchListingByName(): Promise<Map<string, IpowatchListing
   }
 }
 
-/** One IPO's own page → the fields only it carries. Never throws. */
-async function fetchIpowatchDetail(url: string | null, record: IpoRecord): Promise<IpoRecord> {
-  if (!url) return record;
-  try {
-    const res = await fetch(url, { headers: { ...BROWSER_HEADERS, Accept: 'text/html' } });
-    if (!res.ok) return record;
-    return mergeIpowatchDetail(record, parseIpowatchIpoDetail(await res.text()));
-  } catch {
-    return record;
-  }
-}
-
 const fetchIpowatch: Provider = async (prior) => {
   // Reuse whatever symbol NSE or BSE already chose for the same issue this run.
   // Most live issues carry no exchange identifier at all, so without this a
@@ -281,12 +319,10 @@ const fetchIpowatch: Provider = async (prior) => {
 
   const today = new Date().toISOString().slice(0, 10);
 
-  const [gmpRes, listingByName] = await Promise.all([
-    fetch(IPOWATCH_GMP_URL, { headers: { ...BROWSER_HEADERS, Accept: 'text/html' } }),
+  const [gmpHtml, listingByName] = await Promise.all([
+    fetchIpowatchGmpHtml(),
     fetchIpowatchListingByName(),
   ]);
-  if (!gmpRes.ok) throw new Error(`ipowatch GMP page responded ${gmpRes.status}`);
-  const gmpHtml = await gmpRes.text();
   const gmpRows = parseIpowatchGmpTable(gmpHtml);
 
   const base: { row: IpowatchGmpRow; record: IpoRecord }[] = [];
@@ -295,26 +331,82 @@ const fetchIpowatch: Provider = async (prior) => {
     if (record) base.push({ row, record });
   }
 
-  // Every remaining row is Mainboard by now (SME was dropped in ipowatchIpoRow),
-  // so this is ~10 detail-page fetches, not ~20 — fetched in parallel to stay
-  // well inside the Edge Function's time budget.
-  const enriched = await Promise.all(
-    base.map(({ row, record }) => fetchIpowatchDetail(row.url, record)),
-  );
-
   const byKey = new Map<string, IpoRecord>();
   const slugIndex = new Map<string, { symbol: string; open_date: string | null }>();
 
-  enriched.forEach((record, i) => {
+  // lot_size, issue_size_cr and allotment_date stay null here — ipogyani
+  // supplies them from its list response, so no per-IPO page is fetched. See
+  // the note above the URLs.
+  base.forEach(({ row, record }) => {
     byKey.set(`${record.symbol}|${record.open_date}`, record);
 
-    const slug = slugFromPath(base[i].row.url);
+    const slug = slugFromPath(row.url);
     if (slug) slugIndex.set(slug, { symbol: record.symbol, open_date: record.open_date });
   });
 
   const records = [...byKey.values()];
   if (records.length === 0) throw new Error('ipowatch returned no usable rows');
   return { provider: 'IPOWATCH', records, slugIndex };
+};
+
+// ---------------------------------------------------------------------------
+// provider: ipogyani.com
+//
+// Also undocumented, but JSON rather than HTML: /api/ipos is the endpoint the
+// site's own pages call, and one 39 KB response carries every field the three
+// ipowatch fetches above have to reassemble — price band, lot size, issue
+// size, all four dates, GMP with a real ISO timestamp, and the subscription
+// figures ipowatch never quoted at all. No parsing, no per-IPO detail fetch,
+// no date-format guessing; see ipogyani.ts for the mapping.
+//
+// Runs last of the four, so the fields it has and the exchanges do not —
+// listing_date and allotment_date above all — win the upsert. Running last is
+// only safe because ipogyaniIpoRow folds the earlier providers' record into
+// its own and never overwrites a populated field with a null.
+//
+// ipowatch is deliberately kept alongside it rather than replaced: two
+// independent grey-market feeds mean a redesign on either side degrades the
+// chart instead of emptying it.
+// ---------------------------------------------------------------------------
+
+const IPOGYANI_API = 'https://ipogyani.com/api/ipos';
+
+async function fetchIpogyaniApi(): Promise<IpogyaniIpo[]> {
+  const res = await fetch(IPOGYANI_API, { headers: BROWSER_HEADERS });
+  if (!res.ok) throw new Error(`ipogyani API responded ${res.status}`);
+  const body = await res.json().catch(() => null);
+  if (!Array.isArray(body)) throw new Error('ipogyani API did not return an array');
+  return body as IpogyaniIpo[];
+}
+
+const fetchIpogyani: Provider = async (prior) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = await fetchIpogyaniApi();
+
+  // ipogyani publishes no exchange trading symbol and does not say which
+  // exchange a "Mainboard" issue lists on, so both come from whatever NSE, BSE
+  // or ipowatch already wrote for the same company this run.
+  const priorByName = priorIndex(prior);
+
+  const byKey = new Map<string, IpoRecord>();
+  const slugIndex = new Map<string, { symbol: string; open_date: string | null }>();
+
+  for (const row of rows) {
+    const record = ipogyaniIpoRow(row, priorByName, today);
+    if (!record) continue;
+    byKey.set(`${record.symbol}|${record.open_date}`, record);
+    const slug = ipogyaniSlug(row);
+    if (slug) slugIndex.set(slug, { symbol: record.symbol, open_date: record.open_date });
+  }
+
+  const records = [...byKey.values()];
+  if (records.length === 0) throw new Error('ipogyani returned no usable rows');
+  return {
+    provider: 'IPOGYANI',
+    records,
+    slugIndex,
+    registrars: registrarAssignments(rows, records),
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -342,15 +434,30 @@ async function upsert(client: SupabaseClient, records: IpoRecord[]): Promise<num
 // target — so it runs outside the provider loop rather than making upsert()
 // polymorphic. Its failure must never fail the sync: the IPO list is the
 // product, GMP is a garnish.
+//
+// Two feeds write here. They share `ipo_gmp` without colliding because its
+// unique index is (provider, provider_slug, observed_at) and they disagree on
+// all three: different provider names, different slugs for the same issue
+// ('behari-lal-ipo' vs 'behari-lal-engineering-ipo'), and different update
+// stamps. Each is fetched and logged separately so a redesign on one side
+// leaves the other's series intact and the app's banner can name the culprit.
 // ---------------------------------------------------------------------------
+
+async function fetchIpogyaniGmp(): Promise<GmpReading[]> {
+  // Refetched rather than threaded through from fetchIpogyani, for the same
+  // reason fetchGmp refetches the ipowatch page: the two legs must be able to
+  // fail independently, and this response is 39 KB of JSON.
+  const readings = (await fetchIpogyaniApi())
+    .map(ipogyaniGmpRow)
+    .filter((r): r is GmpReading => r !== null);
+
+  if (readings.length === 0) throw new Error('ipogyani API returned no usable GMP rows');
+  return readings;
+}
 
 async function fetchGmp(): Promise<GmpReading[]> {
   const runIso = new Date().toISOString();
-
-  const res = await fetch(IPOWATCH_GMP_URL, { headers: { ...BROWSER_HEADERS, Accept: 'text/html' } });
-  if (!res.ok) throw new Error(`ipowatch GMP page responded ${res.status}`);
-  const html = await res.text();
-  const rows = parseIpowatchGmpTable(html);
+  const rows = parseIpowatchGmpTable(await fetchIpowatchGmpHtml());
 
   const readings = rows
     .map((row) => ipowatchGmpRow(row, runIso))
@@ -393,9 +500,8 @@ async function writeGmp(
   client: SupabaseClient,
   readings: GmpReading[],
   slugIndex: Map<string, { symbol: string; open_date: string | null }>,
+  indexes: IpoIndexes,
 ): Promise<number> {
-  const indexes = await loadIpoIndexes(client);
-
   const rows = readings.map((reading) => ({
     ...reading,
     ipo_id: resolveIpoId(reading, slugIndex, indexes),
@@ -418,6 +524,7 @@ async function writeGmp(
 async function backfillGmp(
   client: SupabaseClient,
   slugIndex: Map<string, { symbol: string; open_date: string | null }>,
+  indexes: IpoIndexes,
 ): Promise<number> {
   const { from } = windowAround(MATCH_WINDOW_DAYS);
   const { data, error } = await client
@@ -428,7 +535,6 @@ async function backfillGmp(
   if (error) throw error;
   if (!data || data.length === 0) return 0;
 
-  const indexes = await loadIpoIndexes(client);
   let repaired = 0;
 
   for (const row of data) {
@@ -442,6 +548,63 @@ async function backfillGmp(
   }
 
   return repaired;
+}
+
+// ---------------------------------------------------------------------------
+// registrar
+//
+// Written as narrow updates after the provider loop rather than as a field on
+// IpoRecord, because the upsert writes whole rows per provider: NSE runs first
+// and knows no registrar, so a registrar on IpoRecord would be nulled on every
+// issue ipogyani does not also carry, and nothing would restore it —
+// syncKfintechCompanies now runs once ever rather than every tick.
+// ---------------------------------------------------------------------------
+
+async function applyRegistrars(
+  client: SupabaseClient,
+  assignments: RegistrarAssignment[],
+  indexes: IpoIndexes,
+): Promise<number> {
+  if (assignments.length === 0) return 0;
+
+  // Grouped by registrar, not written one row at a time. A handful of
+  // registrars handle every issue on the book — 11 live IPOs resolved to just
+  // three — so this is three `in (…)` updates rather than eleven round trips.
+  // That distinction is not cosmetic: the per-row version tipped the whole
+  // function over the Edge runtime's compute limit (WORKER_RESOURCE_LIMIT).
+  const byRegistrar = new Map<string, { name: string; url: string | null; ids: string[] }>();
+
+  for (const assignment of assignments) {
+    const id = indexes.bySymbolOpen.get(
+      `${assignment.symbol.toUpperCase()}|${assignment.open_date}`,
+    );
+    if (!id) continue;
+
+    const key = `${assignment.name}|${assignment.url ?? ''}`;
+    const group = byRegistrar.get(key);
+    if (group) group.ids.push(id);
+    else byRegistrar.set(key, { name: assignment.name, url: assignment.url, ids: [id] });
+  }
+
+  let updated = 0;
+  for (const { name, url, ids } of byRegistrar.values()) {
+    const { error } = await client
+      .from('ipos')
+      .update({ registrar: name, registrar_url: url })
+      .in('id', ids)
+      // KFintech listing an issue in its own allotment dropdown is direct
+      // evidence of who the registrar is; ipogyani is a third party reporting
+      // it. Where they disagree, the evidence wins.
+      .is('kfintech_company_id', null)
+      // Load-bearing, and deliberately unlike syncKfintechCompanies, which
+      // exempts itself from this filter (see the file header). That pass only
+      // writes fields a user never types. `registrar` is one they do — it is a
+      // field on the manual-add form — so this pass must never touch their row.
+      .is('created_by', null);
+    if (!error) updated += ids.length;
+  }
+
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -501,7 +664,10 @@ async function syncKfintechCompanies(client: SupabaseClient): Promise<number> {
     const { error } = await client
       .from('ipos')
       .update({
-        registrar: 'KFINTECH',
+        // Spelled the same way resolveRegistrar spells it — this column is
+        // rendered straight into "Check allotment at …" on the IPO screen, and
+        // two spellings would show up as two different registrars.
+        registrar: 'KFintech',
         registrar_url: `${KFINTECH_BASE}/`,
         kfintech_company_id: company.clientId,
       })
@@ -523,6 +689,10 @@ Deno.serve(async (req) => {
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
   );
+
+  // Isolates are reused between invocations, so the per-request page cache has
+  // to be cleared here rather than trusted to be empty.
+  ipowatchGmpHtml = null;
 
   // The app calls this on demand (from the "Check status" button, when an
   // IPO has no kfintech_company_id yet) wanting just a fast KFintech re-match
@@ -549,25 +719,37 @@ Deno.serve(async (req) => {
     });
   }
 
-  // Named, rather than derived from function identity — with three providers,
+  // Named, rather than derived from function identity — with four providers,
   // `provider === fetchNse ? 'NSE' : 'BSE'` would log every ipowatch failure as
   // BSE and make the app's staleness banner blame the wrong scraper.
+  //
+  // Order is load-bearing: each provider sees what the earlier ones produced,
+  // and the last one's fields win the upsert. The exchanges go first because
+  // they are the only source of a real trading symbol; ipogyani goes last
+  // because it carries the most fields.
   const providers: readonly (readonly [string, Provider])[] = [
     ['NSE', fetchNse],
     ['BSE', fetchBse],
     ['IPOWATCH', fetchIpowatch],
+    ['IPOGYANI', fetchIpogyani],
   ];
 
   const outcomes: Outcome[] = [];
   const prior: IpoRecord[] = [];
-  let slugIndex = new Map<string, { symbol: string; open_date: string | null }>();
+  // Merged across providers, not replaced by the last one to return: both
+  // ipowatch and ipogyani supply a slug index, and each GMP feed needs its own
+  // slugs present for the slug→symbol rung of resolveIpoId. Their slug
+  // namespaces do not overlap.
+  const slugIndex = new Map<string, { symbol: string; open_date: string | null }>();
+  const registrars: RegistrarAssignment[] = [];
 
   for (const [name, provider] of providers) {
     try {
       const result = await provider(prior);
       const rows = await upsert(client, result.records);
       prior.push(...result.records);
-      if (result.slugIndex) slugIndex = result.slugIndex;
+      if (result.slugIndex) for (const [k, v] of result.slugIndex) slugIndex.set(k, v);
+      if (result.registrars) registrars.push(...result.registrars);
       outcomes.push({ provider: name, ok: true, rows });
       await client.from('sync_log').insert({ provider: name, ok: true, rows_upserted: rows });
     } catch (e) {
@@ -586,21 +768,66 @@ Deno.serve(async (req) => {
   // never turn a healthy IPO sync into an HTTP 502.
   const anyOk = outcomes.some((o) => o.ok);
 
-  const gmp: Outcome = { provider: 'IPOWATCH_GMP', ok: false, rows: 0 };
+  // Loaded once and shared by every pass below. All four consumers run after
+  // the provider loop, so they all want the same post-upsert snapshot — and
+  // reloading it per pass was four identical round trips against the same
+  // 45-day window.
+  const indexes = await loadIpoIndexes(client);
+
+  const registrar: Outcome = { provider: 'REGISTRAR', ok: false, rows: 0 };
   try {
-    const readings = await fetchGmp();
-    gmp.rows = await writeGmp(client, readings, slugIndex);
-    gmp.rows += await backfillGmp(client, slugIndex);
-    gmp.ok = true;
+    registrar.rows = await applyRegistrars(client, registrars, indexes);
+    registrar.ok = true;
   } catch (e) {
-    gmp.message = e instanceof Error ? e.message : String(e);
+    registrar.message = e instanceof Error ? e.message : String(e);
   }
-  outcomes.push(gmp);
+  outcomes.push(registrar);
   await client.from('sync_log').insert({
-    provider: gmp.provider,
-    ok: gmp.ok,
-    rows_upserted: gmp.rows,
-    message: gmp.message ?? null,
+    provider: registrar.provider,
+    ok: registrar.ok,
+    rows_upserted: registrar.rows,
+    message: registrar.message ?? null,
+  });
+
+  // Each feed is fetched, written and logged on its own so one dying leaves the
+  // other's series intact. The backfill pass is shared — it re-tries every
+  // unattached reading regardless of who wrote it — so it runs once, after
+  // both, rather than being repeated per feed.
+  const gmpFeeds: readonly (readonly [string, () => Promise<GmpReading[]>])[] = [
+    ['IPOWATCH_GMP', fetchGmp],
+    ['IPOGYANI_GMP', fetchIpogyaniGmp],
+  ];
+
+  for (const [name, fetchReadings] of gmpFeeds) {
+    const gmp: Outcome = { provider: name, ok: false, rows: 0 };
+    try {
+      gmp.rows = await writeGmp(client, await fetchReadings(), slugIndex, indexes);
+      gmp.ok = true;
+    } catch (e) {
+      gmp.message = e instanceof Error ? e.message : String(e);
+    }
+    outcomes.push(gmp);
+    await client.from('sync_log').insert({
+      provider: gmp.provider,
+      ok: gmp.ok,
+      rows_upserted: gmp.rows,
+      message: gmp.message ?? null,
+    });
+  }
+
+  const backfill: Outcome = { provider: 'GMP_BACKFILL', ok: false, rows: 0 };
+  try {
+    backfill.rows = await backfillGmp(client, slugIndex, indexes);
+    backfill.ok = true;
+  } catch (e) {
+    backfill.message = e instanceof Error ? e.message : String(e);
+  }
+  outcomes.push(backfill);
+  await client.from('sync_log').insert({
+    provider: backfill.provider,
+    ok: backfill.ok,
+    rows_upserted: backfill.rows,
+    message: backfill.message ?? null,
   });
 
   const kfintech: Outcome = { provider: 'KFINTECH_MATCH', ok: false, rows: 0 };
