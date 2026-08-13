@@ -3,7 +3,7 @@
  * around inclusive boundaries — exactly the kind of logic that quietly goes
  * wrong on the open and close days themselves.
  */
-import { bucketOf, gmpIsStale, gmpTrend, latestGmp } from './ipos';
+import { bucketOf, gmpIsStale, gmpTrend, latestGmp, pickGmpProvider } from './ipos';
 import type { Ipo, IpoGmp } from '../types';
 
 function ipo(patch: Partial<Ipo>): Ipo {
@@ -77,11 +77,11 @@ describe('bucketOf', () => {
  * is a null rather than a zero — so both ends of these helpers have to cope with
  * gaps rather than assuming a dense series.
  */
-function gmpAt(observed_at: string, gmp: number | null): IpoGmp {
+function gmpAt(observed_at: string, gmp: number | null, provider = 'IPOWATCH'): IpoGmp {
   return {
-    id: `g-${observed_at}`,
+    id: `g-${provider}-${observed_at}`,
     ipo_id: 'i1',
-    provider: 'IPOWATCH',
+    provider,
     provider_slug: 'test-co-ipo',
     company_name: 'Test Co',
     open_date: '2026-08-10',
@@ -125,6 +125,39 @@ describe('gmpTrend', () => {
     expect(gmpTrend([])).toBe('unknown');
     expect(gmpTrend([earlier])).toBe('unknown');
     expect(gmpTrend([gmpAt('2026-08-10T10:00:00Z', null)])).toBe('unknown');
+  });
+});
+
+/**
+ * Two providers write readings for the same IPO and they quote different desks
+ * at different times. Mixing them draws one line zig-zagging between two
+ * series, which `gmpTrend` would then report as movement in the market.
+ */
+describe('pickGmpProvider', () => {
+  const ipowatch = gmpAt('2026-08-10T10:00:00Z', 5, 'IPOWATCH');
+  const ipogyani = gmpAt('2026-08-10T11:00:00Z', 9, 'IPOGYANI');
+
+  it('prefers ipogyani when both feeds have readings', () => {
+    expect(pickGmpProvider([ipogyani, ipowatch])).toEqual([ipogyani]);
+  });
+
+  it('falls back to ipowatch when ipogyani has nothing', () => {
+    expect(pickGmpProvider([ipowatch])).toEqual([ipowatch]);
+  });
+
+  it('keeps an unrecognised provider rather than showing an empty chart', () => {
+    const other = gmpAt('2026-08-10T09:00:00Z', 3, 'CHITTORGARH');
+    expect(pickGmpProvider([other])).toEqual([other]);
+  });
+
+  it('never mixes providers, even an unrecognised one', () => {
+    const other = gmpAt('2026-08-10T09:00:00Z', 3, 'CHITTORGARH');
+    const another = gmpAt('2026-08-10T08:00:00Z', 4, 'INVESTORGAIN');
+    expect(pickGmpProvider([other, another])).toEqual([other]);
+  });
+
+  it('is empty for an empty series', () => {
+    expect(pickGmpProvider([])).toEqual([]);
   });
 });
 

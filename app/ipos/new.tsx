@@ -136,7 +136,9 @@ export default function NewIpo() {
           keyboardType="number-pad"
           hint="Shares per lot. Needed to work out how much an application blocks."
         />
-        <Field label="Registrar" value={registrar} onChangeText={setRegistrar} placeholder="Link Intime" />
+        {/* Not "Link Intime" — that brand was retired and its site no longer
+            resolves. The sync writes "MUFG Intime" for the same registrar. */}
+        <Field label="Registrar" value={registrar} onChangeText={setRegistrar} placeholder="MUFG Intime" />
       </Card>
 
       <Button title="Save IPO" onPress={() => { setError(null); create.mutate(); }} loading={create.isPending} />

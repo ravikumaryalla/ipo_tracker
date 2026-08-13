@@ -69,11 +69,44 @@ export async function updateIpo(id: string, patch: Partial<Ipo>): Promise<Ipo> {
 }
 
 /**
+ * Providers we plot, best first.
+ *
+ * ipogyani is preferred because its number is itself an average across several
+ * grey-market quoters rather than a single desk's, and it stamps a real
+ * timestamp on each reading instead of a minute-resolution local string.
+ */
+const GMP_PROVIDERS = ['IPOGYANI', 'IPOWATCH'] as const;
+
+/**
+ * One provider's readings, not a merge of everyone's.
+ *
+ * Two feeds write to ipo_gmp for the same IPO and they do not agree — they
+ * quote different desks at different times. Interleaving them by timestamp
+ * would draw a single line zig-zagging between two series and make `gmpTrend`
+ * report the difference between providers as a movement in the market.
+ *
+ * Pure so it can be tested without a database; `gmpHistory` is the only caller.
+ */
+export function pickGmpProvider(rows: IpoGmp[]): IpoGmp[] {
+  for (const provider of GMP_PROVIDERS) {
+    const series = rows.filter((row) => row.provider === provider);
+    if (series.length > 0) return series;
+  }
+  // An unrecognised provider is still better than an empty chart — but never
+  // mixed with another one.
+  const fallback = rows[0]?.provider;
+  return fallback ? rows.filter((row) => row.provider === fallback) : [];
+}
+
+/**
  * Grey market premium readings for one IPO, oldest first so a chart can plot
  * them directly.
  *
  * Fetched newest-first and reversed, so `limit` means "the most recent N"
- * rather than "the first N ever recorded".
+ * rather than "the first N ever recorded". Over-fetched by the number of
+ * providers writing, because the rows are filtered down to one provider after
+ * the query — asking for exactly `limit` would return a short series whenever
+ * both feeds are healthy.
  */
 export async function gmpHistory(ipoId: string, limit = 60): Promise<IpoGmp[]> {
   const { data, error } = await supabase
@@ -81,9 +114,11 @@ export async function gmpHistory(ipoId: string, limit = 60): Promise<IpoGmp[]> {
     .select('*')
     .eq('ipo_id', ipoId)
     .order('observed_at', { ascending: false })
-    .limit(limit);
+    .limit(limit * GMP_PROVIDERS.length);
   if (error) throw dbError(error);
-  return (data ?? []).slice().reverse();
+  return pickGmpProvider(data ?? [])
+    .slice(0, limit)
+    .reverse();
 }
 
 /** Newest reading, or null. Pure — the caller already has the rows. */
@@ -124,9 +159,11 @@ export async function latestSyncStatus(): Promise<SyncLogRow[]> {
     .from('sync_log')
     .select('*')
     .order('ran_at', { ascending: false })
-    // Four providers report per run, so 10 rows is only two and a half runs —
-    // not enough to still name a provider that failed a couple of runs ago.
-    .limit(20);
+    // Nine providers report per run (NSE, BSE, IPOWATCH, IPOGYANI, REGISTRAR,
+    // the two GMP feeds, the shared backfill, and KFINTECH_MATCH), so 20 rows
+    // would be barely two runs — not enough to still name a provider that
+    // failed a couple of runs ago.
+    .limit(45);
   if (error) throw dbError(error);
 
   const seen = new Set<string>();

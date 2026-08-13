@@ -30,6 +30,9 @@ const TABS: { key: IpoBucket; label: string }[] = [
 /** Flag the list as stale once the newest successful sync is over a day old. */
 const STALE_AFTER_HOURS = 30;
 
+/** The sync-ipos providers that write `ipos` rows; the rest are side legs. */
+const LIST_PROVIDERS = new Set(['NSE', 'BSE', 'IPOWATCH', 'IPOGYANI']);
+
 /** Each bucket gets its own rail colour so the list reads at a glance. */
 const BUCKET_ACCENT: Record<IpoBucket, string> = {
   open: colors.success,
@@ -58,12 +61,15 @@ export default function IposTab() {
 
   const staleWarning = useMemo(() => {
     // Only the providers that actually supply the IPO list count towards
-    // freshness. The GMP feed and the cron heartbeat also write sync_log, and a
-    // run where only those succeeded would otherwise suppress a genuine "this
-    // list is days old" warning.
-    const listRows = sync.data?.filter(
-      (row) => row.provider !== 'IPOWATCH_GMP' && row.provider !== 'CRON',
-    );
+    // freshness. The GMP feeds, the GMP backfill, the KFintech match and the
+    // cron heartbeat also write sync_log, and a run where only those succeeded
+    // would otherwise suppress a genuine "this list is days old" warning.
+    //
+    // An allowlist rather than a denylist, so adding a provider cannot silently
+    // start suppressing the warning. KFINTECH_MATCH is why that matters: it now
+    // logs ok with "skipped: already synced once" on every run, so under a
+    // denylist it always looked like a fresh successful sync.
+    const listRows = sync.data?.filter((row) => LIST_PROVIDERS.has(row.provider));
     const lastOk = listRows?.filter((row) => row.ok).sort((a, b) => b.ran_at.localeCompare(a.ran_at))[0];
     if (!lastOk) {
       const failure = listRows?.[0];

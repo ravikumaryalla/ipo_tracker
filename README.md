@@ -72,9 +72,21 @@ jobs rather than one because a cron expression has a single minute field and tho
 differ in their minute. The service-role key lives only in the database and in Supabase
 secrets — never in `.env`, never in the app bundle.
 
-The sync pulls three sources in order — NSE, BSE, then ipowatch.in — each independent of
-the next, plus grey market premium readings into `ipo_gmp`. ipowatch.in runs last because
-it is the only source that supplies a listing date.
+The sync pulls four sources in order — NSE, BSE, ipowatch.in, then ipogyani.com — each
+independent of the next, plus grey market premium readings into `ipo_gmp`. The exchanges
+go first because they are the only source of a real trading symbol; the other two follow
+because they are the only sources of a listing date, and ipogyani.com goes last because
+it carries the most fields (it also fills gaps rather than overwriting what it finds).
+
+ipowatch.in and ipogyani.com each write their own GMP series. Two feeds rather than one
+so a redesign on either side degrades the chart instead of emptying it; the app plots one
+provider at a time, preferring ipogyani.com. ipogyani.com also supplies the registrar, so
+the "Check allotment at …" link points at the issue's actual registrar instead of assuming
+KFintech — which was wrong for 5 of 11 mainboard issues on the day it was added.
+
+Keep an eye on total bytes per run. ipowatch.in serves ~900 KB pages and the Edge Function
+has a hard compute budget: fetching one page per IPO on top of the list pages killed the
+worker outright (`WORKER_RESOURCE_LIMIT`), taking the healthy providers down with it.
 
 > **Expect this to break eventually.** None of these sites publishes a documented IPO API;
 > `sync-ipos` calls the endpoints their own front-ends use. Every attempt is written to
@@ -159,7 +171,7 @@ lib/
 components/               SecretField, AccountForm, ui primitives
 supabase/
   migrations/             schema, RLS, P&L view, broker seed, GMP, cron
-  functions/sync-ipos/    NSE → BSE → ipowatch.in chain, plus GMP
+  functions/sync-ipos/    NSE → BSE → ipowatch.in → ipogyani.com chain, plus GMP
     parse.ts              pure parsing + matching — the tested part
 ```
 
