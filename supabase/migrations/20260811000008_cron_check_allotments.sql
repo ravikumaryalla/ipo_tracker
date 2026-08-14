@@ -38,6 +38,11 @@ $$;
 revoke all on function public.trigger_check_allotments() from public;
 revoke all on function public.trigger_check_allotments() from anon, authenticated;
 
+-- SUPERSEDED by 20260814000001_cron_check_allotments_15min.sql, which replaces
+-- this job with 'check-allotments-15min' on '*/15 * * * *'. Kept as-is so the
+-- migration history still replays; trigger_check_allotments() above is
+-- unchanged and still the function that job calls.
+--
 -- On the hour, every hour. check-allotments itself gates on 19:00 IST on
 -- each IPO's allotment_date, so most hourly ticks are no-ops until an IPO
 -- actually reaches that point — this cadence is what gives "check again in

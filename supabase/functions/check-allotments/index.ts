@@ -4,7 +4,7 @@
  *
  *  - Scheduled (no request body): every application still waiting on a
  *    result, gated by whether its IPO's allotment_date is due yet (see
- *    below). This is the hourly cron sweep.
+ *    below). This is the 15-minute cron sweep.
  *  - On-demand (`{ applicationIds: string[] }` in the body): the app's
  *    "Check status" button. Runs the identical check/persist logic against
  *    exactly the ids named, skipping the due-date gate — an explicit user
@@ -26,11 +26,13 @@
  * Skipping that check would let any authenticated user read anyone's
  * allotment result by guessing/reusing an application id.
  *
- * Scheduled candidates become due once their IPO's allotment_date reaches
- * 19:00 IST (Basis of Allotment typically finalises in the evening — see
- * parse.ts#isAllotmentCheckDue), and stay a candidate on every hourly run
- * after that until KFintech returns a definitive result (status stops
- * being 'APPLIED', so it drops out of the query on its own).
+ * Scheduled candidates are due only inside one window: 21:00 IST to midnight
+ * on their IPO's allotment_date (Basis of Allotment typically finalises in
+ * the evening — see parse.ts#isAllotmentCheckDue). Inside it they are
+ * rechecked every 15 minutes until KFintech returns a definitive result
+ * (status stops being 'APPLIED', so it drops out of the query on its own).
+ * Once midnight passes the sweep gives up for good and the on-demand path
+ * below is the only way an unresolved application gets checked again.
  *
  * A WORD OF WARNING, same as sync-ipos: the KFintech endpoint below is
  * undocumented, reverse-engineered from their own frontend bundle. It can
@@ -133,8 +135,8 @@ type CheckResult = {
  * outright error, and the no-match/no-pan rejections alike. Only the resolved
  * path knows anything definitive, but "Last checked" answers "when did we last
  * try", not "when did we last succeed": leaving the failure paths unstamped
- * made a check that ran hourly and failed every time look like it had never
- * run at all.
+ * made a check that ran on every sweep and failed every time look like it had
+ * never run at all.
  */
 async function touchCheckedAt(
   client: SupabaseClient,

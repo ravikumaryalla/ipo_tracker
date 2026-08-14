@@ -16,15 +16,22 @@
 /** India is UTC+5:30 and never observes DST, so a fixed offset is correct. */
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
+/** Three hours: 21:00 IST until midnight. */
+const CHECK_WINDOW_MS = 3 * 60 * 60 * 1000;
+
 /**
  * Whether it's time to check this IPO's allotment yet.
  *
- * Basis of Allotment typically finalises in the evening, so checking starts
- * at 19:00 IST on `allotmentDate` — not before. After that instant, every
- * later moment (later the same evening, or any subsequent day the
- * application is still unresolved) is also due; the hourly cadence itself
- * comes from the cron re-invoking this function, not from anything tracked
- * here.
+ * Basis of Allotment typically finalises in the evening, so the sweep runs
+ * for exactly one window: 21:00 IST on `allotmentDate` until midnight that
+ * same night. The 15-minute cadence inside it comes from the cron
+ * re-invoking this function, not from anything tracked here.
+ *
+ * The window deliberately closes at midnight rather than staying open until
+ * a result appears. An allotment published the next morning — or a slipped
+ * allotment_date — is therefore never picked up automatically; the app's
+ * "Check status" button skips this gate entirely and is the fallback for
+ * that case.
  */
 export function isAllotmentCheckDue(allotmentDate: string, nowIso: string): boolean {
   const m = allotmentDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -33,9 +40,9 @@ export function isAllotmentCheckDue(allotmentDate: string, nowIso: string): bool
   const now = new Date(nowIso);
   if (Number.isNaN(now.getTime())) return false;
 
-  const thresholdMs =
-    Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 19, 0, 0) - IST_OFFSET_MS;
-  return now.getTime() >= thresholdMs;
+  const opensMs =
+    Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 21, 0, 0) - IST_OFFSET_MS;
+  return now.getTime() >= opensMs && now.getTime() < opensMs + CHECK_WINDOW_MS;
 }
 
 /** One application KFintech has on file against the queried PAN. */

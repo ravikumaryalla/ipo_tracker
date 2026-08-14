@@ -36,7 +36,7 @@ function ipo(patch: Partial<Ipo>): Ipo {
   };
 }
 
-/** A date comfortably in the future, so 9am on it has not passed. */
+/** A date comfortably in the future, so no hour on it has passed. */
 function daysFromNow(days: number): string {
   return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
 }
@@ -76,15 +76,25 @@ describe('remindersFor', () => {
     expect(remindersFor(past, true)).toHaveLength(0);
   });
 
-  it('schedules every reminder for the morning', () => {
-    const reminders = remindersFor(
-      ipo({ allotment_date: daysFromNow(4), listing_date: daysFromNow(6) }),
-      true,
+  it('schedules closing and listing for the morning', () => {
+    const reminders = remindersFor(ipo({ close_date: daysFromNow(4) }), false).concat(
+      remindersFor(ipo({ listing_date: daysFromNow(6) }), true),
     );
+    expect(reminders).toHaveLength(2);
     for (const reminder of reminders) {
       expect(reminder.when.getHours()).toBe(9);
       expect(reminder.when.getTime()).toBeGreaterThan(Date.now());
     }
+  });
+
+  // 9pm is when the server starts checking KFintech, so a 9am nudge would point
+  // at a result that cannot exist yet.
+  it('schedules the allotment reminder for 9pm, not the morning', () => {
+    const reminders = remindersFor(ipo({ allotment_date: daysFromNow(4) }), true);
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0].id).toBe('i1:allotment');
+    expect(reminders[0].when.getHours()).toBe(21);
+    expect(reminders[0].when.getTime()).toBeGreaterThan(Date.now());
   });
 
   it('produces nothing for an IPO with no dates', () => {

@@ -9,8 +9,8 @@ import type { Ipo } from './types';
 
 export type Reminder = { id: string; title: string; body: string; when: Date };
 
-/** 9am local on the given date. Null when that moment has already passed. */
-function morningOf(isoDate: string, hour = 9): Date | null {
+/** `hour` o'clock local on the given date. Null when that moment has already passed. */
+function onDateAt(isoDate: string, hour = 9): Date | null {
   const when = new Date(`${isoDate}T00:00:00`);
   when.setHours(hour, 0, 0, 0);
   return when.getTime() > Date.now() ? when : null;
@@ -21,7 +21,7 @@ export function remindersFor(ipo: Ipo, hasApplication: boolean): Reminder[] {
 
   // Closing reminder only matters if you have NOT applied yet.
   if (!hasApplication && ipo.close_date) {
-    const when = morningOf(ipo.close_date);
+    const when = onDateAt(ipo.close_date);
     if (when) {
       out.push({
         id: `${ipo.id}:close`,
@@ -33,8 +33,11 @@ export function remindersFor(ipo: Ipo, hasApplication: boolean): Reminder[] {
   }
 
   // Allotment and listing only matter once you have applied.
+  // 9pm, not 9am: the server only starts checking KFintech at 21:00 IST on
+  // allotment_date (supabase/functions/check-allotments/parse.ts), so a morning
+  // nudge pointed at a result that could not exist yet.
   if (hasApplication && ipo.allotment_date) {
-    const when = morningOf(ipo.allotment_date);
+    const when = onDateAt(ipo.allotment_date, 21);
     if (when) {
       out.push({
         id: `${ipo.id}:allotment`,
@@ -46,7 +49,7 @@ export function remindersFor(ipo: Ipo, hasApplication: boolean): Reminder[] {
   }
 
   if (hasApplication && ipo.listing_date) {
-    const when = morningOf(ipo.listing_date);
+    const when = onDateAt(ipo.listing_date);
     if (when) {
       out.push({
         id: `${ipo.id}:listing`,

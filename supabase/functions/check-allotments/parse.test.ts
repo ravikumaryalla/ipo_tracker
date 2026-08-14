@@ -24,22 +24,28 @@ function match(patch: Partial<KfintechAllotmentMatch> = {}): KfintechAllotmentMa
 }
 
 describe('isAllotmentCheckDue', () => {
-  it('is not due before 19:00 IST on allotment_date', () => {
-    // 18:59 IST = 13:29 UTC.
-    expect(isAllotmentCheckDue('2026-08-17', '2026-08-17T13:29:00.000Z')).toBe(false);
+  it('is not due before 21:00 IST on allotment_date', () => {
+    // 20:59 IST = 15:29 UTC.
+    expect(isAllotmentCheckDue('2026-08-17', '2026-08-17T15:29:00.000Z')).toBe(false);
   });
 
-  it('is due at exactly 19:00 IST on allotment_date', () => {
-    // 19:00 IST = 13:30 UTC.
-    expect(isAllotmentCheckDue('2026-08-17', '2026-08-17T13:30:00.000Z')).toBe(true);
+  it('is due at exactly 21:00 IST on allotment_date', () => {
+    // 21:00 IST = 15:30 UTC.
+    expect(isAllotmentCheckDue('2026-08-17', '2026-08-17T15:30:00.000Z')).toBe(true);
   });
 
   it('stays due later the same evening', () => {
-    expect(isAllotmentCheckDue('2026-08-17', '2026-08-17T18:00:00.000Z')).toBe(true);
+    // 23:50 IST = 18:20 UTC.
+    expect(isAllotmentCheckDue('2026-08-17', '2026-08-17T18:20:00.000Z')).toBe(true);
   });
 
-  it('stays due on a later day if still unresolved', () => {
-    expect(isAllotmentCheckDue('2026-08-17', '2026-08-19T04:00:00.000Z')).toBe(true);
+  it('closes at midnight IST that night', () => {
+    // 00:00 IST on the 18th = 18:30 UTC on the 17th.
+    expect(isAllotmentCheckDue('2026-08-17', '2026-08-17T18:30:00.000Z')).toBe(false);
+  });
+
+  it('does not reopen on a later day, even if still unresolved', () => {
+    expect(isAllotmentCheckDue('2026-08-17', '2026-08-19T04:00:00.000Z')).toBe(false);
   });
 
   it('is false for an unparseable date', () => {
