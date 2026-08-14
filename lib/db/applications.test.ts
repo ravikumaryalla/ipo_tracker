@@ -4,6 +4,8 @@
  * sold and unsold allotments.
  */
 import {
+  appliedAccountIds,
+  bidDefaultsFor,
   computeAmounts,
   summarise,
   touchAllotmentChecked,
@@ -61,6 +63,48 @@ describe('computeAmounts', () => {
       shares_applied: 13,
       amount_blocked: 14950,
     });
+  });
+});
+
+describe('appliedAccountIds', () => {
+  const rows = [
+    row({ id: 'a1', ipo_id: 'i1', demat_account_id: 'acc-1', category: 'RETAIL' }),
+    row({ id: 'a2', ipo_id: 'i1', demat_account_id: 'acc-2', category: 'SHNI' }),
+    row({ id: 'a3', ipo_id: 'i2', demat_account_id: 'acc-3', category: 'RETAIL' }),
+  ];
+
+  it('matches on the IPO and the category together', () => {
+    expect(appliedAccountIds(rows, 'i1', 'RETAIL')).toEqual(new Set(['acc-1']));
+    expect(appliedAccountIds(rows, 'i1', 'SHNI')).toEqual(new Set(['acc-2']));
+  });
+
+  it('is empty for an IPO with no applications, and for no IPO at all', () => {
+    expect(appliedAccountIds(rows, 'i9', 'RETAIL').size).toBe(0);
+    expect(appliedAccountIds(rows, null, 'RETAIL').size).toBe(0);
+  });
+});
+
+describe('bidDefaultsFor', () => {
+  it('returns null when the IPO has no applications yet', () => {
+    expect(bidDefaultsFor([row({ ipo_id: 'i1' })], 'i2')).toBeNull();
+    expect(bidDefaultsFor([], 'i1')).toBeNull();
+    expect(bidDefaultsFor([row({ ipo_id: 'i1' })], null)).toBeNull();
+  });
+
+  it('takes the most recently applied bid, whatever order the rows arrive in', () => {
+    const rows = [
+      row({ id: 'a1', applied_at: '2026-08-01T00:00:00Z', lots: 1, bid_price: 100 }),
+      row({ id: 'a2', applied_at: '2026-08-03T00:00:00Z', lots: 3, bid_price: 120, category: 'SHNI' }),
+      row({ id: 'a3', applied_at: '2026-08-02T00:00:00Z', lots: 2, bid_price: 110 }),
+    ];
+    expect(bidDefaultsFor(rows, 'i1')).toEqual({ category: 'SHNI', lots: 3, bid_price: 120 });
+  });
+
+  it('coerces the numerics PostgREST sends as strings', () => {
+    const rows = [
+      row({ lots: 2, bid_price: '250.00' as unknown as number }),
+    ];
+    expect(bidDefaultsFor(rows, 'i1')).toEqual({ category: 'RETAIL', lots: 2, bid_price: 250 });
   });
 });
 

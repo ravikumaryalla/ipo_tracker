@@ -114,6 +114,54 @@ export async function deleteApplication(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// adding more accounts to an IPO you have already applied to
+// ---------------------------------------------------------------------------
+
+/**
+ * Accounts that already have an application for this IPO in this category —
+ * the exact shape of the ipo_applications_unique_bid constraint, so the form
+ * can grey them out instead of letting the insert fail.
+ */
+export function appliedAccountIds(
+  rows: ApplicationPnl[],
+  ipoId: string | null,
+  category: ApplicationCategory,
+): Set<string> {
+  if (!ipoId) return new Set();
+  return new Set(
+    rows
+      .filter((r) => r.ipo_id === ipoId && r.category === category)
+      .map((r) => r.demat_account_id),
+  );
+}
+
+/**
+ * Bid details to default to when adding more accounts to an IPO: whatever the
+ * most recent application for it used. Null when the IPO has none yet, in
+ * which case the form keeps its own defaults.
+ */
+export function bidDefaultsFor(
+  rows: ApplicationPnl[],
+  ipoId: string | null,
+): { category: ApplicationCategory; lots: number; bid_price: number } | null {
+  if (!ipoId) return null;
+  // listApplications already sorts by applied_at desc, but don't rely on the
+  // caller having kept that order.
+  const latest = rows
+    .filter((r) => r.ipo_id === ipoId)
+    .reduce<ApplicationPnl | null>(
+      (best, r) => (best === null || r.applied_at > best.applied_at ? r : best),
+      null,
+    );
+  if (!latest) return null;
+  return {
+    category: latest.category,
+    lots: Number(latest.lots),
+    bid_price: Number(latest.bid_price),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // dashboard maths
 // ---------------------------------------------------------------------------
 

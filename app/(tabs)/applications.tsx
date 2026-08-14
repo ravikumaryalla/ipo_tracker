@@ -330,6 +330,15 @@ export default function ApplicationsTab() {
                   </View>
                 )}
 
+                <View style={{ marginTop: spacing.md }}>
+                  <Button
+                    title="Add accounts"
+                    variant="ghost"
+                    icon="add"
+                    onPress={() => router.push(`/applications/new?ipoId=${first.ipo_id}`)}
+                  />
+                </View>
+
                 {group.length > 1 && (
                   <View style={{ marginTop: spacing.md }}>
                     <Button

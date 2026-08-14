@@ -7,14 +7,20 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Banner, Button, Card, ErrorText, Field, Loading, Screen } from '../../components/ui';
 import { colors, formatInr, radius, spacing, type } from '../../constants/theme';
 import { useAuth } from '../../lib/auth';
 import { listAccountSummaries } from '../../lib/db/accounts';
-import { computeAmounts, createApplication } from '../../lib/db/applications';
+import {
+  appliedAccountIds,
+  bidDefaultsFor,
+  computeAmounts,
+  createApplication,
+  listApplications,
+} from '../../lib/db/applications';
 import { bucketOf, listIpos } from '../../lib/db/ipos';
 import type { ApplicationCategory } from '../../lib/types';
 
@@ -35,6 +41,9 @@ export default function NewApplication() {
 
   const ipos = useQuery({ queryKey: ['ipos'], queryFn: listIpos });
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: listAccountSummaries });
+  // Same key the Applications tab uses, so arriving from an IPO card this is
+  // already in cache — it tells us what has been applied for this IPO already.
+  const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
 
   const [ipoId, setIpoId] = useState<string | null>(params.ipoId ?? null);
   const [accountIds, setAccountIds] = useState<string[]>(
@@ -52,7 +61,41 @@ export default function NewApplication() {
     [ipos.data, ipoId],
   );
 
+  const existing = useMemo(() => applications.data ?? [], [applications.data]);
+
+  // Adding accounts to an IPO you have already applied to: start from the bid
+  // the earlier applications used rather than making you retype it. Only fires
+  // when the chosen IPO changes, so it never clobbers an edit made afterwards.
+  const defaults = useMemo(() => bidDefaultsFor(existing, ipoId), [existing, ipoId]);
+  const prefilledFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ipoId || !defaults || prefilledFor.current === ipoId) return;
+    prefilledFor.current = ipoId;
+    setCategory(defaults.category);
+    setLots(String(defaults.lots));
+    setBidPrice(String(defaults.bid_price));
+  }, [ipoId, defaults]);
+
+  // One application per account per category per IPO — those accounts aren't
+  // pickable, and anything already picked stops being valid when the category
+  // or IPO changes under it.
+  const applied = useMemo(
+    () => appliedAccountIds(existing, ipoId, category),
+    [existing, ipoId, category],
+  );
+  useEffect(() => {
+    setAccountIds((prev) =>
+      prev.some((id) => applied.has(id)) ? prev.filter((id) => !applied.has(id)) : prev,
+    );
+  }, [applied]);
+
+  const selectable = useMemo(
+    () => (accounts.data ?? []).filter((a) => !applied.has(a.id)),
+    [accounts.data, applied],
+  );
+
   function toggleAccount(id: string) {
+    if (applied.has(id)) return;
     setAccountIds((prev) => (prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id]));
   }
 
@@ -115,7 +158,7 @@ export default function NewApplication() {
     onError: (e) => setError(e instanceof Error ? e.message : 'Could not save.'),
   });
 
-  if (ipos.isLoading || accounts.isLoading) return <Loading />;
+  if (ipos.isLoading || accounts.isLoading || applications.isLoading) return <Loading />;
 
   // Applying only makes sense for IPOs that are open or about to be; keep older
   // ones reachable though, since you may be back-filling history.
@@ -131,6 +174,13 @@ export default function NewApplication() {
       {accounts.data?.length === 0 && (
         <Banner tone="warning">
           Add a demat account first — an application has to belong to one.
+        </Banner>
+      )}
+
+      {(accounts.data?.length ?? 0) > 0 && ipoId !== null && selectable.length === 0 && (
+        <Banner tone="info">
+          Every account has already applied to this IPO in the {category} category. Pick another
+          category to add more.
         </Banner>
       )}
 
@@ -166,37 +216,37 @@ export default function NewApplication() {
           <Text style={styles.section}>
             Applied from{accountIds.length > 0 ? ` (${accountIds.length})` : ''}
           </Text>
-          {(accounts.data?.length ?? 0) > 0 && (
+          {selectable.length > 0 && (
             <Pressable
               onPress={() =>
                 setAccountIds(
-                  accountIds.length === accounts.data?.length
-                    ? []
-                    : (accounts.data ?? []).map((a) => a.id),
+                  accountIds.length === selectable.length ? [] : selectable.map((a) => a.id),
                 )
               }
             >
               <Text style={styles.sectionAction}>
-                {accountIds.length === accounts.data?.length ? 'Clear' : 'Select all'}
+                {accountIds.length === selectable.length ? 'Clear' : 'Select all'}
               </Text>
             </Pressable>
           )}
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <View style={styles.chipRow}>
-            {accounts.data?.map((account) => (
-              <Pressable
-                key={account.id}
-                onPress={() => toggleAccount(account.id)}
-                style={[styles.chip, accountIds.includes(account.id) && styles.chipOn]}
-              >
-                <Text
-                  style={[styles.chipText, accountIds.includes(account.id) && styles.chipTextOn]}
+            {accounts.data?.map((account) => {
+              const isApplied = applied.has(account.id);
+              const on = accountIds.includes(account.id);
+              return (
+                <Pressable
+                  key={account.id}
+                  onPress={() => toggleAccount(account.id)}
+                  disabled={isApplied}
+                  style={[styles.chip, on && styles.chipOn, isApplied && styles.chipOff]}
                 >
-                  {account.nickname}
-                </Text>
-              </Pressable>
-            ))}
+                  <Text style={[styles.chipText, on && styles.chipTextOn]}>{account.nickname}</Text>
+                  {isApplied && <Text style={styles.chipSub}>applied</Text>}
+                </Pressable>
+              );
+            })}
           </View>
         </ScrollView>
       </Card>
@@ -275,6 +325,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   chipOn: { backgroundColor: colors.accentSoft, borderColor: colors.accent },
+  chipOff: { opacity: 0.45 },
   chipText: { ...type.label, color: colors.textMuted, fontSize: 13, letterSpacing: 0.2 },
   chipTextOn: { color: colors.accent },
   chipSub: { ...type.caption, color: colors.textFaint, fontSize: 10, marginTop: 2 },
