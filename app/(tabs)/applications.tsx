@@ -285,10 +285,11 @@ export default function ApplicationsTab() {
                 )}
 
                 {eligible.length > 0 && (
-                  <View style={{ marginTop: spacing.lg }}>
+                  <View style={{ marginTop: spacing.md }}>
                     <Button
                       title="Check status"
                       variant="secondary"
+                      size="sm"
                       onPress={() => {
                         setCheckResults((prev) => {
                           const next = { ...prev };
@@ -330,24 +331,29 @@ export default function ApplicationsTab() {
                   </View>
                 )}
 
-                <View style={{ marginTop: spacing.md }}>
-                  <Button
-                    title="Add accounts"
-                    variant="ghost"
-                    icon="add"
-                    onPress={() => router.push(`/applications/new?ipoId=${first.ipo_id}`)}
-                  />
-                </View>
-
-                {group.length > 1 && (
-                  <View style={{ marginTop: spacing.md }}>
+                <View style={styles.actions}>
+                  <View style={{ flex: 1 }}>
                     <Button
-                      title="Update all"
+                      title="Add accounts"
                       variant="ghost"
-                      onPress={() => router.push(`/applications/bulk-update?ipoId=${first.ipo_id}`)}
+                      size="sm"
+                      icon="add"
+                      onPress={() => router.push(`/applications/new?ipoId=${first.ipo_id}`)}
                     />
                   </View>
-                )}
+                  {group.length > 1 && (
+                    <View style={{ flex: 1 }}>
+                      <Button
+                        title="Update all"
+                        variant="ghost"
+                        size="sm"
+                        onPress={() =>
+                          router.push(`/applications/bulk-update?ipoId=${first.ipo_id}`)
+                        }
+                      />
+                    </View>
+                  )}
+                </View>
               </Card>
             </Animated.View>
           );
@@ -390,6 +396,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs + 1, flex: 1 },
+  actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
   meta: { ...type.caption, color: colors.textFaint },
   pnl: { ...type.bodyStrong, fontSize: 15 },
 });

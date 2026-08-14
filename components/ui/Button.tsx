@@ -25,6 +25,7 @@ export function Button({
   title,
   onPress,
   variant = 'primary',
+  size = 'md',
   loading = false,
   disabled = false,
   icon,
@@ -32,6 +33,8 @@ export function Button({
   title: string;
   onPress: () => void;
   variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
+  /** `sm` is for buttons packed into a card; its container owns the spacing. */
+  size?: 'md' | 'sm';
   loading?: boolean;
   disabled?: boolean;
   icon?: IconName;
@@ -68,6 +71,7 @@ export function Button({
       }}
       style={[
         styles.button,
+        size === 'sm' && styles.small,
         variant === 'secondary' && styles.secondary,
         variant === 'danger' && styles.danger,
         variant === 'ghost' && styles.ghost,
@@ -89,8 +93,10 @@ export function Button({
         <ActivityIndicator color={fg} />
       ) : (
         <View style={styles.inner}>
-          {icon ? <Icon name={icon} size={18} color={fg} /> : null}
-          <Text style={[styles.label, { color: fg }]}>{title}</Text>
+          {icon ? <Icon name={icon} size={size === 'sm' ? 15 : 18} color={fg} /> : null}
+          <Text style={[styles.label, size === 'sm' && styles.labelSmall, { color: fg }]}>
+            {title}
+          </Text>
         </View>
       )}
     </AnimatedPressable>
@@ -107,10 +113,17 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     overflow: 'hidden',
   },
+  small: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    marginBottom: 0,
+  },
   secondary: { backgroundColor: colors.surfaceRaised },
   danger: { backgroundColor: colors.dangerSoft },
   ghost: { backgroundColor: 'transparent' },
   disabled: { opacity: 0.45 },
   inner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   label: { ...type.bodyStrong, fontSize: 15 },
+  labelSmall: { fontSize: 13, lineHeight: 18 },
 });

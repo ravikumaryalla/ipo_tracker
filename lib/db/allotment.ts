@@ -26,7 +26,9 @@ async function resolveKfintechMatch(ipoId: string): Promise<string | null> {
   // identical to "invoked fine, genuinely no match", which is exactly the
   // confusing "did this even run?" symptom this guards against.
   if (error) {
-    throw new Error('Could not reach the check service — check your connection and try again.');
+    throw new Error(
+      'Could not reach the check service — check your connection and try again.',
+    );
   }
 
   const { data } = await supabase
@@ -37,7 +39,12 @@ async function resolveKfintechMatch(ipoId: string): Promise<string | null> {
   return data?.kfintech_company_id ?? null;
 }
 
-export type OnDemandOutcome = 'resolved' | 'not-yet' | 'no-match' | 'no-pan' | 'error';
+export type OnDemandOutcome =
+  | 'resolved'
+  | 'not-yet'
+  | 'no-match'
+  | 'no-pan'
+  | 'error';
 
 export type OnDemandCheckResult = {
   id: string;
@@ -49,12 +56,16 @@ export type OnDemandCheckResult = {
 };
 
 /** Invoke check-allotments' on-demand mode for exactly these application ids. */
-async function invokeCheck(applicationIds: string[]): Promise<OnDemandCheckResult[]> {
+async function invokeCheck(
+  applicationIds: string[],
+): Promise<OnDemandCheckResult[]> {
   const { data, error } = await supabase.functions.invoke('check-allotments', {
     body: { applicationIds },
   });
   if (error) {
-    throw new Error('Could not reach the check service — check your connection and try again.');
+    throw new Error(
+      'Could not reach the check service — check your connection and try again.',
+    );
   }
   return (data?.results ?? []) as OnDemandCheckResult[];
 }
@@ -79,7 +90,7 @@ export async function checkAllotment(
     return {
       id: applicationId,
       outcome: 'no-match',
-      message: 'Could not match this IPO to a KFintech-registered issue yet — try again later.',
+      message: 'allotment not released yet',
     };
   }
 
@@ -112,7 +123,7 @@ export async function checkAllotmentsForIpo(
     await touchAllotmentChecked(applicationIds);
     return {
       matched: false,
-      message: 'Could not match this IPO to a KFintech-registered issue yet — try again later.',
+      message: 'allotment not released yet',
     };
   }
 

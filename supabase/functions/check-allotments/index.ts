@@ -59,14 +59,19 @@ const BROWSER_HEADERS = {
   Accept: 'application/json, text/plain, */*',
 };
 
-const KFINTECH_QUERY_URL = 'https://0uz601ms56.execute-api.ap-south-1.amazonaws.com/prod/api/query?type=pan';
+const KFINTECH_QUERY_URL =
+  'https://0uz601ms56.execute-api.ap-south-1.amazonaws.com/prod/api/query?type=pan';
 
 type CandidateRow = {
   id: string;
   user_id: string;
   shares_applied: number;
   application_no: string | null;
-  ipos: { company_name: string; kfintech_company_id: string | null; allotment_date: string | null } | null;
+  ipos: {
+    company_name: string;
+    kfintech_company_id: string | null;
+    allotment_date: string | null;
+  } | null;
   demat_accounts: { pan: string | null } | null;
 };
 
@@ -131,7 +136,10 @@ type CheckResult = {
  * made a check that ran hourly and failed every time look like it had never
  * run at all.
  */
-async function touchCheckedAt(client: SupabaseClient, ids: string[]): Promise<void> {
+async function touchCheckedAt(
+  client: SupabaseClient,
+  ids: string[],
+): Promise<void> {
   if (ids.length === 0) return;
   await client
     .from('ipo_applications')
@@ -139,18 +147,27 @@ async function touchCheckedAt(client: SupabaseClient, ids: string[]): Promise<vo
     .in('id', ids);
 }
 
-async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResult> {
+async function checkOne(
+  client: SupabaseClient,
+  row: DueRow,
+): Promise<CheckResult> {
   try {
     const res = await fetch(KFINTECH_QUERY_URL, {
-      headers: { ...BROWSER_HEADERS, reqparam: row.pan, client_id: row.companyId },
+      headers: {
+        ...BROWSER_HEADERS,
+        reqparam: row.pan,
+        client_id: row.companyId,
+      },
     });
 
     if (res.status === 404) {
       await touchCheckedAt(client, [row.id]);
       return { row, outcome: 'not-yet' };
     }
-    if (res.status === 429) throw new Error('KFintech is rate-limiting allotment checks');
-    if (!res.ok) throw new Error(`KFintech allotment check responded ${res.status}`);
+    if (res.status === 429)
+      throw new Error('KFintech is rate-limiting allotment checks');
+    if (!res.ok)
+      throw new Error(`KFintech allotment check responded ${res.status}`);
 
     const body = await res.json().catch(() => null);
     const matches = parseKfintechAllotmentBody(body);
@@ -172,12 +189,21 @@ async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResul
       .eq('id', row.id);
     if (error) throw error;
 
-    return { row, outcome: 'resolved', status, shares_allotted: match.sharesAllotted };
+    return {
+      row,
+      outcome: 'resolved',
+      status,
+      shares_allotted: match.sharesAllotted,
+    };
   } catch (e) {
     // The attempt happened even though it blew up, so stamp it — but never let
     // a failure to stamp replace the error we're actually reporting.
     await touchCheckedAt(client, [row.id]).catch(() => {});
-    return { row, outcome: 'error', message: e instanceof Error ? e.message : String(e) };
+    return {
+      row,
+      outcome: 'error',
+      message: e instanceof Error ? e.message : String(e),
+    };
   }
 }
 
@@ -194,7 +220,10 @@ type OnDemandResult = {
   message?: string;
 };
 
-async function loadCandidatesByIds(client: SupabaseClient, ids: string[]): Promise<CandidateRow[]> {
+async function loadCandidatesByIds(
+  client: SupabaseClient,
+  ids: string[],
+): Promise<CandidateRow[]> {
   const { data, error } = await client
     .from('ipo_applications')
     .select(
@@ -226,7 +255,8 @@ async function sendAllotmentPushes(
   results: CheckResult[],
 ): Promise<void> {
   const resolved = results.filter(
-    (r): r is CheckResult & { status: AllotmentOutcome } => r.outcome === 'resolved' && !!r.status,
+    (r): r is CheckResult & { status: AllotmentOutcome } =>
+      r.outcome === 'resolved' && !!r.status,
   );
   if (resolved.length === 0) return;
 
@@ -239,7 +269,10 @@ async function sendAllotmentPushes(
 
     const tokensByUser = new Map<string, string[]>();
     for (const t of (tokenRows ?? []) as { user_id: string; token: string }[]) {
-      tokensByUser.set(t.user_id, [...(tokensByUser.get(t.user_id) ?? []), t.token]);
+      tokensByUser.set(t.user_id, [
+        ...(tokensByUser.get(t.user_id) ?? []),
+        t.token,
+      ]);
     }
 
     const messages = resolved.flatMap((r) =>
@@ -256,7 +289,10 @@ async function sendAllotmentPushes(
 
     await fetch(EXPO_PUSH_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
       body: JSON.stringify(messages),
     });
   } catch {
@@ -283,7 +319,10 @@ async function ownedIds(
   return new Set((data ?? []).map((row: { id: string }) => row.id));
 }
 
-async function handleOnDemand(req: Request, requestedIds: string[]): Promise<Response> {
+async function handleOnDemand(
+  req: Request,
+  requestedIds: string[],
+): Promise<Response> {
   const unauthorized = () =>
     new Response(JSON.stringify({ ok: false, error: 'Unauthorized' }), {
       status: 401,
@@ -298,19 +337,29 @@ async function handleOnDemand(req: Request, requestedIds: string[]): Promise<Res
   // A second client, scoped to the caller's own JWT rather than the service
   // role, purely to find out who is actually asking — see the file header
   // for why this check exists.
-  const callerClient = createClient(supabaseUrl, Deno.env.get('SUPABASE_ANON_KEY')!, {
-    global: { headers: { Authorization: authHeader } },
-  });
-  const { data: userData, error: userError } = await callerClient.auth.getUser();
+  const callerClient = createClient(
+    supabaseUrl,
+    Deno.env.get('SUPABASE_ANON_KEY')!,
+    {
+      global: { headers: { Authorization: authHeader } },
+    },
+  );
+  const { data: userData, error: userError } =
+    await callerClient.auth.getUser();
   if (userError || !userData?.user) return unauthorized();
 
-  const serviceClient = createClient(supabaseUrl, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+  const serviceClient = createClient(
+    supabaseUrl,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+  );
 
   const allowed = await ownedIds(serviceClient, userData.user.id, requestedIds);
   const idsToCheck = requestedIds.filter((id) => allowed.has(id));
 
   const candidates =
-    idsToCheck.length > 0 ? await loadCandidatesByIds(serviceClient, idsToCheck) : [];
+    idsToCheck.length > 0
+      ? await loadCandidatesByIds(serviceClient, idsToCheck)
+      : [];
 
   const results: OnDemandResult[] = [];
   const checkable: DueRow[] = [];
@@ -325,7 +374,7 @@ async function handleOnDemand(req: Request, requestedIds: string[]): Promise<Res
       results.push({
         id: row.id,
         outcome: 'no-match',
-        message: 'Could not match this IPO to a KFintech-registered issue yet — try again later.',
+        message: 'allotment not released yet',
       });
       continue;
     }
@@ -334,7 +383,8 @@ async function handleOnDemand(req: Request, requestedIds: string[]): Promise<Res
       results.push({
         id: row.id,
         outcome: 'no-pan',
-        message: 'The linked demat account has no PAN saved — add it before checking allotment.',
+        message:
+          'The linked demat account has no PAN saved — add it before checking allotment.',
       });
       continue;
     }
@@ -351,7 +401,9 @@ async function handleOnDemand(req: Request, requestedIds: string[]): Promise<Res
 
   await touchCheckedAt(serviceClient, rejected);
 
-  const checked = await Promise.all(checkable.map((row) => checkOne(serviceClient, row)));
+  const checked = await Promise.all(
+    checkable.map((row) => checkOne(serviceClient, row)),
+  );
   for (const c of checked) {
     results.push({
       id: c.row.id,
@@ -375,7 +427,9 @@ Deno.serve(async (req) => {
   const body = await req.json().catch(() => ({}));
   const requestedIds: unknown = body?.applicationIds;
   if (Array.isArray(requestedIds) && requestedIds.length > 0) {
-    const ids = requestedIds.filter((id): id is string => typeof id === 'string');
+    const ids = requestedIds.filter(
+      (id): id is string => typeof id === 'string',
+    );
     return handleOnDemand(req, ids);
   }
 
@@ -398,7 +452,8 @@ Deno.serve(async (req) => {
     checked = results.length;
     for (const result of results) {
       if (result.outcome === 'resolved') resolved += 1;
-      else if (result.outcome === 'error' && result.message) errors.push(result.message);
+      else if (result.outcome === 'error' && result.message)
+        errors.push(result.message);
     }
 
     await sendAllotmentPushes(client, results);
@@ -417,8 +472,11 @@ Deno.serve(async (req) => {
         : `${checked} checked, ${resolved} resolved`,
   });
 
-  return new Response(JSON.stringify({ ok, checked, resolved, errors }, null, 2), {
-    status: ok ? 200 : 502,
-    headers: { 'Content-Type': 'application/json' },
-  });
+  return new Response(
+    JSON.stringify({ ok, checked, resolved, errors }, null, 2),
+    {
+      status: ok ? 200 : 502,
+      headers: { 'Content-Type': 'application/json' },
+    },
+  );
 });
