@@ -284,30 +284,57 @@ export default function ApplicationsTab() {
                   </View>
                 )}
 
+                <View style={styles.actions}>
+                  {eligible.length > 0 && (
+                    <View style={{ flex: 1 }}>
+                      <Button
+                        title="Check"
+                        variant="secondary"
+                        size="sm"
+                        onPress={() => {
+                          setCheckResults((prev) => {
+                            const next = { ...prev };
+                            delete next[first.ipo_id];
+                            return next;
+                          });
+                          check.mutate({
+                            ipoId: first.ipo_id,
+                            ids: eligible.map((r) => r.id),
+                            kfintechCompanyId: first.kfintech_company_id,
+                          });
+                        }}
+                        loading={checking}
+                      />
+                    </View>
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Button
+                      title="Add"
+                      variant="ghost"
+                      size="sm"
+                      icon="add"
+                      onPress={() => router.push(`/applications/new?ipoId=${first.ipo_id}`)}
+                    />
+                  </View>
+                  {group.length > 1 && (
+                    <View style={{ flex: 1 }}>
+                      <Button
+                        title="Update"
+                        variant="ghost"
+                        size="sm"
+                        onPress={() =>
+                          router.push(`/applications/bulk-update?ipoId=${first.ipo_id}`)
+                        }
+                      />
+                    </View>
+                  )}
+                </View>
+
+                {/* The check's feedback stays below the action row. */}
                 {eligible.length > 0 && (
                   <View style={{ marginTop: spacing.md }}>
-                    <Button
-                      title="Check status"
-                      variant="secondary"
-                      size="sm"
-                      onPress={() => {
-                        setCheckResults((prev) => {
-                          const next = { ...prev };
-                          delete next[first.ipo_id];
-                          return next;
-                        });
-                        check.mutate({
-                          ipoId: first.ipo_id,
-                          ids: eligible.map((r) => r.id),
-                          kfintechCompanyId: first.kfintech_company_id,
-                        });
-                      }}
-                      loading={checking}
-                    />
                     {lastChecked && (
-                      <Text style={[styles.meta, { marginTop: spacing.sm }]}>
-                        Last checked {formatDateTime(lastChecked)}
-                      </Text>
+                      <Text style={styles.meta}>Last checked {formatDateTime(lastChecked)}</Text>
                     )}
                     {result && !result.matched && (
                       <Banner tone="warning">{result.message}</Banner>
@@ -330,30 +357,6 @@ export default function ApplicationsTab() {
                     )}
                   </View>
                 )}
-
-                <View style={styles.actions}>
-                  <View style={{ flex: 1 }}>
-                    <Button
-                      title="Add accounts"
-                      variant="ghost"
-                      size="sm"
-                      icon="add"
-                      onPress={() => router.push(`/applications/new?ipoId=${first.ipo_id}`)}
-                    />
-                  </View>
-                  {group.length > 1 && (
-                    <View style={{ flex: 1 }}>
-                      <Button
-                        title="Update all"
-                        variant="ghost"
-                        size="sm"
-                        onPress={() =>
-                          router.push(`/applications/bulk-update?ipoId=${first.ipo_id}`)
-                        }
-                      />
-                    </View>
-                  )}
-                </View>
               </Card>
             </Animated.View>
           );
