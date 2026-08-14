@@ -3,7 +3,13 @@
  * that matter are: nothing applied yet, everything still pending, and a mix of
  * sold and unsold allotments.
  */
-import { computeAmounts, summarise } from './applications';
+import {
+  computeAmounts,
+  summarise,
+  touchAllotmentChecked,
+  updateApplicationOutcome,
+} from './applications';
+import { clearSupabaseStub, setSupabaseStub } from '../testing/supabaseMock';
 import type { ApplicationPnl, ApplicationStatus } from '../types';
 
 function row(patch: Partial<ApplicationPnl>): ApplicationPnl {
@@ -129,5 +135,71 @@ describe('summarise', () => {
     const s = summarise(statuses.map((status, i) => row({ id: `a${i}`, status })));
     expect(s.decidedApplications).toBe(4);
     expect(s.allottedApplications).toBe(2);
+  });
+});
+
+/**
+ * "Last checked" is the only signal the user has that a registrar lookup
+ * actually happened, so which writer stamps allotment_checked_at is the whole
+ * point: updateApplicationOutcome used to stamp it too, which meant typing a
+ * result in by hand claimed a check that never ran.
+ */
+describe('allotment_checked_at writers', () => {
+  type Update = { table: string; payload: Record<string, unknown>; filter: [string, string, unknown] };
+
+  function recordUpdates(result: unknown = { data: {}, error: null }) {
+    const updates: Update[] = [];
+    setSupabaseStub({
+      from: (table: string) => ({
+        update: (payload: Record<string, unknown>) => {
+          const capture = (op: string, column: string, value: unknown) => {
+            updates.push({ table, payload, filter: [op, column, value] });
+            return builder;
+          };
+          const builder = {
+            eq: (c: string, v: unknown) => capture('eq', c, v),
+            in: (c: string, v: unknown) => capture('in', c, v),
+            select: () => builder,
+            single: async () => result,
+            then: (onOk: (v: unknown) => unknown, onErr?: (e: unknown) => unknown) =>
+              Promise.resolve(result).then(onOk, onErr),
+          };
+          return builder;
+        },
+      }),
+    });
+    return updates;
+  }
+
+  afterEach(clearSupabaseStub);
+
+  it('does not stamp allotment_checked_at when an outcome is saved by hand', async () => {
+    const updates = recordUpdates({ data: row({ status: 'ALLOTTED' }), error: null });
+
+    await updateApplicationOutcome('a1', { status: 'ALLOTTED', shares_allotted: 15 });
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0].payload).toEqual({ status: 'ALLOTTED', shares_allotted: 15 });
+    expect(updates[0].payload).not.toHaveProperty('allotment_checked_at');
+    expect(updates[0].filter).toEqual(['eq', 'id', 'a1']);
+  });
+
+  it('stamps allotment_checked_at for every id in one request, touching nothing else', async () => {
+    const updates = recordUpdates({ error: null });
+
+    await touchAllotmentChecked(['a1', 'a2', 'a3']);
+
+    expect(updates).toHaveLength(1);
+    expect(Object.keys(updates[0].payload)).toEqual(['allotment_checked_at']);
+    expect(Date.parse(updates[0].payload.allotment_checked_at as string)).not.toBeNaN();
+    expect(updates[0].filter).toEqual(['in', 'id', ['a1', 'a2', 'a3']]);
+  });
+
+  it('makes no request when there is nothing to stamp', async () => {
+    const updates = recordUpdates({ error: null });
+
+    await touchAllotmentChecked([]);
+
+    expect(updates).toHaveLength(0);
   });
 });

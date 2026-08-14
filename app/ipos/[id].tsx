@@ -84,7 +84,10 @@ export default function IpoDetail() {
     mutationFn: (ids: string[]) =>
       checkAllotmentsForIpo(id!, ids, ipo.data?.kfintech_company_id ?? null),
     onSuccess: async (outcome) => {
-      if (outcome.matched) await queryClient.invalidateQueries({ queryKey: ['applications'] });
+      // Unconditional — the unmatched path stamps allotment_checked_at too, so
+      // gating on `matched` left "Last checked" a tap behind. Same fix as the
+      // applications tab.
+      await queryClient.invalidateQueries({ queryKey: ['applications'] });
       setCheckResult(outcome);
     },
     onError: (e) => {

@@ -9,11 +9,29 @@
  * Any test that calls through to a query function will fail loudly rather than
  * silently pretending to talk to a database.
  */
-const notStubbed = () => {
+const notStubbed = (): never => {
   throw new Error(
     'supabase client is not available in unit tests — test the pure encryption ' +
       'boundary, or add an explicit stub for this query.',
   );
 };
 
-export const supabase = new Proxy({} as never, { get: notStubbed });
+let stub: Record<string | symbol, unknown> | null = null;
+
+/**
+ * Opt a single test into a hand-written client. Used where the assertion is
+ * about the payload a db function *sends* — e.g. that saving an outcome by hand
+ * does not also stamp allotment_checked_at. Pair with clearSupabaseStub in an
+ * afterEach so the loud default is restored for everything else.
+ */
+export function setSupabaseStub(next: Record<string | symbol, unknown>): void {
+  stub = next;
+}
+
+export function clearSupabaseStub(): void {
+  stub = null;
+}
+
+export const supabase = new Proxy({} as never, {
+  get: (_target, prop) => (stub ? stub[prop] : notStubbed()),
+});

@@ -84,15 +84,28 @@ export async function updateApplicationOutcome(
 ): Promise<IpoApplication> {
   const { data, error } = await supabase
     .from('ipo_applications')
-    .update({
-      ...patch,
-      allotment_checked_at: new Date().toISOString(),
-    })
+    .update(patch)
     .eq('id', id)
     .select()
     .single();
   if (error) throw dbError(error);
   return data;
+}
+
+/**
+ * Record that a registrar check was attempted, without asserting anything about
+ * the outcome. Kept separate from updateApplicationOutcome — which used to stamp
+ * this itself — so that entering a result by hand doesn't masquerade as a check
+ * having run, which made "Last checked" claim a registrar lookup that never
+ * happened.
+ */
+export async function touchAllotmentChecked(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const { error } = await supabase
+    .from('ipo_applications')
+    .update({ allotment_checked_at: new Date().toISOString() })
+    .in('id', ids);
+  if (error) throw dbError(error);
 }
 
 export async function deleteApplication(id: string): Promise<void> {

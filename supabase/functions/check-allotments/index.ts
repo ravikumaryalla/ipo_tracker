@@ -122,16 +122,21 @@ type CheckResult = {
 };
 
 /**
- * Stamp allotment_checked_at without touching status/shares_allotted — for a
- * "not yet" outcome nothing definitive is known, but the attempt still
- * happened and "Last checked" needs to reflect that (otherwise an on-demand
- * check that comes back inconclusive looks like it never ran).
+ * Stamp allotment_checked_at without touching status/shares_allotted.
+ *
+ * Every path that constitutes an attempt stamps this — resolved, "not yet",
+ * outright error, and the no-match/no-pan rejections alike. Only the resolved
+ * path knows anything definitive, but "Last checked" answers "when did we last
+ * try", not "when did we last succeed": leaving the failure paths unstamped
+ * made a check that ran hourly and failed every time look like it had never
+ * run at all.
  */
-async function touchCheckedAt(client: SupabaseClient, id: string): Promise<void> {
+async function touchCheckedAt(client: SupabaseClient, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
   await client
     .from('ipo_applications')
     .update({ allotment_checked_at: new Date().toISOString() })
-    .eq('id', id);
+    .in('id', ids);
 }
 
 async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResult> {
@@ -141,7 +146,7 @@ async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResul
     });
 
     if (res.status === 404) {
-      await touchCheckedAt(client, row.id);
+      await touchCheckedAt(client, [row.id]);
       return { row, outcome: 'not-yet' };
     }
     if (res.status === 429) throw new Error('KFintech is rate-limiting allotment checks');
@@ -150,7 +155,7 @@ async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResul
     const body = await res.json().catch(() => null);
     const matches = parseKfintechAllotmentBody(body);
     if (!matches) {
-      await touchCheckedAt(client, row.id);
+      await touchCheckedAt(client, [row.id]);
       return { row, outcome: 'not-yet' };
     }
 
@@ -169,6 +174,9 @@ async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResul
 
     return { row, outcome: 'resolved', status, shares_allotted: match.sharesAllotted };
   } catch (e) {
+    // The attempt happened even though it blew up, so stamp it — but never let
+    // a failure to stamp replace the error we're actually reporting.
+    await touchCheckedAt(client, [row.id]).catch(() => {});
     return { row, outcome: 'error', message: e instanceof Error ? e.message : String(e) };
   }
 }
@@ -306,11 +314,14 @@ async function handleOnDemand(req: Request, requestedIds: string[]): Promise<Res
 
   const results: OnDemandResult[] = [];
   const checkable: DueRow[] = [];
+  /** Rejected before KFintech was ever asked — still attempts, so still stamped. */
+  const rejected: string[] = [];
 
   for (const row of candidates) {
     const companyId = row.ipos?.kfintech_company_id;
     const pan = row.demat_accounts?.pan;
     if (!companyId) {
+      rejected.push(row.id);
       results.push({
         id: row.id,
         outcome: 'no-match',
@@ -319,6 +330,7 @@ async function handleOnDemand(req: Request, requestedIds: string[]): Promise<Res
       continue;
     }
     if (!pan) {
+      rejected.push(row.id);
       results.push({
         id: row.id,
         outcome: 'no-pan',
@@ -336,6 +348,8 @@ async function handleOnDemand(req: Request, requestedIds: string[]): Promise<Res
       pan,
     });
   }
+
+  await touchCheckedAt(serviceClient, rejected);
 
   const checked = await Promise.all(checkable.map((row) => checkOne(serviceClient, row)));
   for (const c of checked) {

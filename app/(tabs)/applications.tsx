@@ -140,7 +140,11 @@ export default function ApplicationsTab() {
       return { ipoId, outcome };
     },
     onSuccess: async ({ ipoId, outcome }) => {
-      if (outcome.matched) await queryClient.invalidateQueries({ queryKey: ['applications'] });
+      // Unconditional: the unmatched path stamps allotment_checked_at too (see
+      // checkAllotmentsForIpo), so gating this on `matched` left "Last checked"
+      // showing the *previous* tap's time for as long as the IPO stayed
+      // unmatched — exactly the case the stamp was added for.
+      await queryClient.invalidateQueries({ queryKey: ['applications'] });
       setCheckResults((prev) => ({ ...prev, [ipoId]: outcome }));
     },
     onError: (e, { ipoId }) => {

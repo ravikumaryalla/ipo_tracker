@@ -9,7 +9,7 @@
  * sync-ipos's on-demand matcher if it doesn't yet), and invoke the check.
  */
 import { supabase } from '../supabase';
-import { updateApplicationOutcome } from './applications';
+import { touchAllotmentChecked } from './applications';
 
 /**
  * Ask sync-ipos to (re-)try matching this IPO against KFintech's company
@@ -75,7 +75,7 @@ export async function checkAllotment(
   if (!companyId) {
     // Record the attempt so "Last checked" moves even though this didn't
     // resolve — see the matching comment in checkAllotmentsForIpo.
-    await updateApplicationOutcome(applicationId, { status: 'APPLIED' });
+    await touchAllotmentChecked([applicationId]);
     return {
       id: applicationId,
       outcome: 'no-match',
@@ -109,9 +109,7 @@ export async function checkAllotmentsForIpo(
     // Still record that an attempt was made — otherwise "Last checked"
     // never moves on a failed match, which reads as the button doing
     // nothing at all.
-    await Promise.all(
-      applicationIds.map((id) => updateApplicationOutcome(id, { status: 'APPLIED' })),
-    );
+    await touchAllotmentChecked(applicationIds);
     return {
       matched: false,
       message: 'Could not match this IPO to a KFintech-registered issue yet — try again later.',
