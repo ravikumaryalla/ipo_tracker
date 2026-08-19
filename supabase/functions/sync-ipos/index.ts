@@ -145,7 +145,7 @@ const fetchNse: Provider = async () => {
 
     for (const raw of rows) {
       const row = raw as Record<string, unknown>;
-      const symbol = String(row.symbol ?? row.Symbol ?? '').trim();
+      const symbol = String(row.symbol ?? row.Symbol ?? '').trim().toUpperCase();
       const name = String(row.companyName ?? row.company_name ?? row.issuerName ?? '').trim();
       if (!symbol || !name) continue;
 

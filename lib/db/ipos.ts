@@ -55,7 +55,13 @@ export type ManualIpoInput = {
 export async function createManualIpo(userId: string, input: ManualIpoInput): Promise<Ipo> {
   const { data, error } = await supabase
     .from('ipos')
-    .insert({ ...input, source: 'MANUAL', created_by: userId, exchange: 'NSE' })
+    .insert({
+      ...input,
+      symbol: input.symbol.trim().toUpperCase(),
+      source: 'MANUAL',
+      created_by: userId,
+      exchange: 'NSE',
+    })
     .select()
     .single();
   if (error) throw dbError(error);

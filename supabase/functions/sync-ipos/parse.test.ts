@@ -536,6 +536,11 @@ describe('ipowatchIpoRow', () => {
     expect(ipowatchIpoRow(GMP_ROW, LISTING_BY_NAME, prior, '2026-08-11')?.symbol).toBe('BLENG');
   });
 
+  it('uppercases the symbol regardless of which source produced it, so casing never splits one company into two rows', () => {
+    const prior = new Map([[`${normalizeName('Behari Lal Engineering')}|2026-08-12`, 'bleng']]);
+    expect(ipowatchIpoRow(GMP_ROW, LISTING_BY_NAME, prior, '2026-08-11')?.symbol).toBe('BLENG');
+  });
+
   it('prefers a real exchange symbol over both', () => {
     const withSymbol = new Map(LISTING_BY_NAME).set(normalizeName('Behari Lal Engineering'), {
       ...LISTING_BY_NAME.get(normalizeName('Behari Lal Engineering'))!,

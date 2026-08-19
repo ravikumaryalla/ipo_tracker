@@ -121,6 +121,21 @@ create table public.ipos (
 create unique index ipos_symbol_open_idx on public.ipos(symbol, open_date);
 create index ipos_dates_idx on public.ipos(open_date desc nulls last);
 
+-- Symbol is written by several independent scrapers that don't agree on
+-- casing/whitespace; normalizing here (rather than trusting every writer) is
+-- what keeps ipos_symbol_open_idx from treating the same company as two rows.
+create or replace function public.normalize_ipo_symbol()
+returns trigger as $$
+begin
+  new.symbol := upper(trim(new.symbol));
+  return new;
+end;
+$$ language plpgsql;
+
+create trigger ipos_normalize_symbol
+  before insert or update on public.ipos
+  for each row execute function public.normalize_ipo_symbol();
+
 -- ---------------------------------------------------------------------------
 -- ipo_applications: which of my accounts applied to what
 -- ---------------------------------------------------------------------------

@@ -546,7 +546,7 @@ export function ipowatchIpoRow(
   const bse = (listing?.bse_symbol ?? '').toUpperCase();
   const slug = slugFromPath(row.url) ?? '';
   const prior = priorSymbols.get(`${normalizeName(company)}|${open}`);
-  const symbol = nse || bse || prior || symbolFromSlug(slug);
+  const symbol = (nse || bse || prior || symbolFromSlug(slug)).toUpperCase();
   if (!symbol) return null;
 
   const type = row.type_cell.toUpperCase();

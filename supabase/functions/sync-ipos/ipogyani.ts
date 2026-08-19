@@ -217,7 +217,7 @@ export function ipogyaniIpoRow(
   if (!company || !open) return null;
 
   const previous = prior.get(`${normalizeName(company)}|${open}`);
-  const symbol = previous?.symbol || symbolFromSlug(raw.slug);
+  const symbol = (previous?.symbol || symbolFromSlug(raw.slug)).toUpperCase();
   if (!symbol) return null;
 
   const record: IpoRecord = {
