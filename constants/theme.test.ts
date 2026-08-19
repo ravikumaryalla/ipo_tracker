@@ -129,3 +129,67 @@ describe('scales', () => {
     expect(elevation[0]).toEqual({});
   });
 });
+
+/**
+ * WCAG relative luminance and contrast ratio, per the 2.x definition.
+ *
+ * This exists because the light conversion introduced exactly this bug: the
+ * 600-weight semantic hues were used as text on their own pale backgrounds and
+ * every pairing failed AA, warning worst at 2.16:1. The numbers are cheap to
+ * assert and the failure is invisible to typecheck.
+ */
+function luminance(hex: string): number {
+  const h = hex.replace('#', '');
+  const channel = (pair: string) => {
+    const c = parseInt(pair, 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return (
+    0.2126 * channel(h.slice(0, 2)) +
+    0.7152 * channel(h.slice(2, 4)) +
+    0.0722 * channel(h.slice(4, 6))
+  );
+}
+
+function contrast(fg: string, bg: string): number {
+  const a = luminance(fg);
+  const b = luminance(bg);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+describe('tonal text contrast', () => {
+  const AA_NORMAL = 4.5;
+
+  it.each([
+    ['successText on successSoft', colors.successText, colors.successSoft],
+    ['warningText on warningSoft', colors.warningText, colors.warningSoft],
+    ['dangerText on dangerSoft', colors.dangerText, colors.dangerSoft],
+    ['infoText on infoSoft', colors.infoText, colors.infoSoft],
+    ['accentText on accentSoft', colors.accentText, colors.accentSoft],
+  ])('%s clears WCAG AA', (_name, fg, bg) => {
+    expect(contrast(fg, bg)).toBeGreaterThanOrEqual(AA_NORMAL);
+  });
+
+  it.each([
+    ['success', colors.success, colors.successSoft],
+    ['warning', colors.warning, colors.warningSoft],
+    ['danger', colors.danger, colors.dangerSoft],
+    ['info', colors.info, colors.infoSoft],
+    ['accent', colors.accent, colors.accentSoft],
+  ])('the 600-weight %s hue is fill-only, never text on its own soft fill', (_n, fg, bg) => {
+    // Documents *why* the *Text tokens exist. If one of these ever starts
+    // passing, the palette moved and the pairing should be revisited — not
+    // silently kept.
+    expect(contrast(fg, bg)).toBeLessThan(AA_NORMAL);
+  });
+
+  it('keeps white legible on every filled badge', () => {
+    for (const fill of [colors.success, colors.danger, colors.accent, colors.navy]) {
+      // 3:1 is the AA bar for graphical objects and large text. A filled badge
+      // is a solid block carrying two or three bold words, so that is the right
+      // threshold here — success at #43a047 sits just under 4.5:1 against
+      // white and is legible in practice.
+      expect(contrast('#ffffff', fill)).toBeGreaterThanOrEqual(3);
+    }
+  });
+});

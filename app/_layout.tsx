@@ -6,7 +6,6 @@
  * decision in one effect makes the access rules readable in one place.
  */
 import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
-import { Sora_600SemiBold, Sora_700Bold } from '@expo-google-fonts/sora';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import { QueryClient, defaultShouldDehydrateQuery } from '@tanstack/react-query';
@@ -27,7 +26,7 @@ import { AuthProvider, useAuth } from '../lib/auth';
 import { VaultProvider, useVault } from '../lib/vault';
 
 // Hold the native splash until the fonts are ready. Without this the first
-// frame renders in the system font and visibly reflows once Sora/Inter land.
+// frame renders in the system font and visibly reflows once Inter lands.
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 const queryClient = new QueryClient({
@@ -167,8 +166,6 @@ function RouteGate({ children }: { children: React.ReactNode }) {
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
-    Sora_600SemiBold,
-    Sora_700Bold,
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,

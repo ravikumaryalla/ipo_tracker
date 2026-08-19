@@ -83,6 +83,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     paddingVertical: 1,
     borderRadius: radius.pill,
+    // A translucent tint of `colors.slate`, so it reads as part of the
+    // unselected label rather than as a second colour.
     backgroundColor: 'rgba(100, 116, 139, 0.16)',
     alignItems: 'center',
   },

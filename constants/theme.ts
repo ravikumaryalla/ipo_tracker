@@ -111,6 +111,24 @@ export const colors = {
   info: '#039be5',
   infoSoft: '#e1f5fe',
 
+  /*
+   * Foregrounds for text sitting on the matching `*Soft` fill.
+   *
+   * The 600-weight hues above are for fills, icons and rules; every one of them
+   * fails WCAG AA as text on its own pale background — warning is the worst at
+   * 2.16:1, and even danger only reaches 3.70:1. These are the 900-weight
+   * shades, which clear 4.5:1 comfortably.
+   *
+   * warningText is the one value outside the Juricat ramp: warning-900
+   * (#e65100) still only manages 3.46:1 on warningSoft, so this is darkened
+   * past the end of the ramp to 7.61:1.
+   */
+  successText: '#1b5e20',
+  warningText: '#7a3e00',
+  dangerText: '#b71c1c',
+  infoText: '#01579b',
+  accentText: '#0d47a1',
+
   /**
    * Two-stop ramps for SVG gradients in charts.tsx. These live on `colors`
    * rather than a `gradients` export on purpose: charts are the only remaining

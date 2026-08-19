@@ -172,7 +172,7 @@ export default function VaultSetup() {
         style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.lg }}
       >
         <View style={[styles.checkbox, savedConfirmed && styles.checkboxOn]}>
-          {savedConfirmed && <Icon name="check" size={16} color="#fff" />}
+          {savedConfirmed && <Icon name="check" size={16} color={colors.onAccent} />}
         </View>
         <Text style={{ ...type.body, color: colors.text, flex: 1 }}>
           I have written down my recovery code

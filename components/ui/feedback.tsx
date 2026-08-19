@@ -57,29 +57,32 @@ export function Badge({
   variant?: 'tonal' | 'filled' | 'outlined';
   size?: 'small' | 'medium';
 }) {
+  // [pale fill, 600-weight hue for fills and rules, 900-weight hue for text].
+  // The second and third differ because the 600 hues all fail WCAG AA as text
+  // on their own pale fill — see the note beside the `*Text` tokens.
   const map = {
-    muted: [colors.surfaceAlt, colors.textMuted, colors.border],
-    success: [colors.successSoft, colors.success, colors.success],
-    warning: [colors.warningSoft, colors.warning, colors.warning],
-    danger: [colors.dangerSoft, colors.danger, colors.danger],
-    accent: [colors.accentSoft, colors.accent, colors.accent],
-    info: [colors.infoSoft, colors.info, colors.info],
+    muted: [colors.surfaceAlt, colors.border, colors.text],
+    success: [colors.successSoft, colors.success, colors.successText],
+    warning: [colors.warningSoft, colors.warning, colors.warningText],
+    danger: [colors.dangerSoft, colors.danger, colors.dangerText],
+    accent: [colors.accentSoft, colors.accent, colors.accentText],
+    info: [colors.infoSoft, colors.info, colors.infoText],
     navy: [colors.accentSoft, colors.navy, colors.navy],
   } as const;
-  const [soft, strong, line] = map[tone];
+  const [soft, hue, ink] = map[tone];
 
   const box =
     variant === 'filled'
-      ? { backgroundColor: strong, borderColor: strong }
+      ? { backgroundColor: hue, borderColor: hue }
       : variant === 'outlined'
-        ? { backgroundColor: 'transparent', borderColor: line }
+        ? { backgroundColor: 'transparent', borderColor: hue }
         : { backgroundColor: soft, borderColor: 'transparent' };
   const fg =
     variant === 'filled'
       ? tone === 'muted'
         ? colors.text
         : colors.onAccent
-      : strong;
+      : ink;
 
   return (
     <View style={[styles.badge, size === 'small' && styles.badgeSmall, box]}>
@@ -114,20 +117,22 @@ export function Banner({
   title?: string;
   children: React.ReactNode;
 }) {
+  // The icon carries the tone at full saturation; the text uses the darker
+  // shade, because the 600 hues are unreadable on their own pale fill.
   const map = {
-    warning: [colors.warningSoft, colors.warning, 'warning'],
-    danger: [colors.dangerSoft, colors.danger, 'warning'],
-    info: [colors.infoSoft, colors.info, 'info'],
-    success: [colors.successSoft, colors.success, 'check'],
+    warning: [colors.warningSoft, colors.warning, colors.warningText, 'warning'],
+    danger: [colors.dangerSoft, colors.danger, colors.dangerText, 'warning'],
+    info: [colors.infoSoft, colors.info, colors.infoText, 'info'],
+    success: [colors.successSoft, colors.success, colors.successText, 'check'],
   } as const;
-  const [bg, fg, icon] = map[tone];
+  const [bg, hue, ink, icon] = map[tone];
 
   return (
     <View style={[styles.banner, { backgroundColor: bg }]}>
-      <Icon name={icon as IconName} size={18} color={fg} />
+      <Icon name={icon as IconName} size={18} color={hue} />
       <View style={styles.bannerBody}>
-        {title ? <Text style={[styles.bannerTitle, { color: fg }]}>{title}</Text> : null}
-        <Text style={[styles.bannerText, { color: fg }]}>{children}</Text>
+        {title ? <Text style={[styles.bannerTitle, { color: ink }]}>{title}</Text> : null}
+        <Text style={[styles.bannerText, { color: ink }]}>{children}</Text>
       </View>
     </View>
   );
@@ -152,9 +157,9 @@ export function AllotmentCheckResults({
     warning: colors.warning,
   };
   const textColor: Record<AllotmentCheckResultTone, string> = {
-    success: colors.success,
+    success: colors.successText,
     neutral: colors.textMuted,
-    warning: colors.warning,
+    warning: colors.warningText,
   };
 
   return (
@@ -214,7 +219,10 @@ export function Skeleton({ height = 16, width = '100%' as number | string, style
   return (
     <Animated.View
       style={[
-        { height, width: width as number, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
+        // bgDeep, not surfaceAlt: a skeleton sits on a white card and
+        // surfaceAlt is the same value as the app background, which leaves
+        // nothing to shimmer against.
+        { height, width: width as number, borderRadius: radius.sm, backgroundColor: colors.bgDeep },
         style,
         animated,
       ]}
@@ -261,7 +269,7 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     marginBottom: spacing.md,
   },
-  errorText: { ...type.caption, color: colors.danger, flex: 1, fontSize: 13 },
+  errorText: { ...type.caption, color: colors.dangerText, flex: 1, fontSize: 13 },
   banner: {
     flexDirection: 'row',
     alignItems: 'flex-start',

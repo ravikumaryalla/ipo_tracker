@@ -44,12 +44,13 @@ export function DonutGauge({
             <Stop offset="1" stopColor={colorStops[1]} />
           </SvgGradient>
         </Defs>
-        {/* Track */}
+        {/* Track. `border` rather than `surfaceAlt`, which is the same value
+            as the app background and all but disappears on a white card. */}
         <Circle
           cx={size / 2}
           cy={size / 2}
           r={r}
-          stroke={colors.surfaceAlt}
+          stroke={colors.border}
           strokeWidth={thickness}
           fill="none"
         />
