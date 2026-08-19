@@ -12,7 +12,13 @@
 module.exports = {
   preset: 'ts-jest/presets/default-esm',
   testEnvironment: 'node',
-  testMatch: ['**/lib/**/*.test.ts', '**/supabase/functions/**/*.test.ts'],
+  testMatch: [
+    '**/lib/**/*.test.ts',
+    '**/supabase/functions/**/*.test.ts',
+    // theme.ts is pure TypeScript with no React Native imports, so its guard
+    // test runs in this same Node environment.
+    '**/constants/**/*.test.ts',
+  ],
   // Argon2id at 64 MiB takes seconds by design; several tests derive keys.
   testTimeout: 60_000,
   extensionsToTreatAsEsm: ['.ts'],

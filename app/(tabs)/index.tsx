@@ -1,278 +1,198 @@
-/**
- * Dashboard.
- *
- * One hero figure, then supporting detail. The net position gets the only
- * oversized number and the only glow on the screen — if a second element
- * competed with it, neither would read as the answer to "how am I doing?".
- */
 import { useQuery } from '@tanstack/react-query';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import {
-  AnimatedNumber,
   Badge,
+  Banner,
+  Button,
   Card,
-  DonutGauge,
   EmptyState,
   ErrorText,
+  Heading,
   Icon,
-  ListRow,
   Loading,
   Screen,
-  SectionHeader,
-  StatTile,
+  Segmented,
 } from '../../components/ui';
-import {
-  colors,
-  formatInr,
-  formatInrCompact,
-  gradients,
-  motion,
-  radius,
-  spacing,
-  type,
-} from '../../constants/theme';
-import { listApplications, summarise } from '../../lib/db/applications';
-import { bucketOf, listIpos } from '../../lib/db/ipos';
+import { colors, formatInr, motion, spacing, type } from '../../constants/theme';
+import { bucketOf, latestSyncStatus, listIpos, type IpoBucket } from '../../lib/db/ipos';
 
-export default function Dashboard() {
+const TABS: { key: IpoBucket; label: string }[] = [
+  { key: 'open', label: 'Open now' },
+  { key: 'upcoming', label: 'Upcoming' },
+  { key: 'closed', label: 'Closed' },
+  { key: 'listed', label: 'Listed' },
+];
+
+/** Flag the list as stale once the newest successful sync is over a day old. */
+const STALE_AFTER_HOURS = 30;
+
+/** The sync-ipos providers that write `ipos` rows; the rest are side legs. */
+const LIST_PROVIDERS = new Set(['NSE', 'BSE', 'IPOWATCH', 'IPOGYANI']);
+
+/** Each bucket gets its own rail colour so the list reads at a glance. */
+const BUCKET_ACCENT: Record<IpoBucket, string> = {
+  open: colors.success,
+  upcoming: colors.accent,
+  closed: colors.textFaint,
+  listed: colors.violet,
+};
+
+export default function IposTab() {
   const router = useRouter();
+  const [tab, setTab] = useState<IpoBucket>('open');
 
-  const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
   const ipos = useQuery({ queryKey: ['ipos'], queryFn: listIpos });
+  const sync = useQuery({ queryKey: ['syncStatus'], queryFn: latestSyncStatus });
 
-  const summary = useMemo(() => summarise(applications.data ?? []), [applications.data]);
-  const openNow = useMemo(
-    () => (ipos.data ?? []).filter((ipo) => bucketOf(ipo) === 'open'),
-    [ipos.data],
-  );
+  const grouped = useMemo(() => {
+    const out: Record<IpoBucket, typeof ipos.data> = {
+      open: [],
+      upcoming: [],
+      closed: [],
+      listed: [],
+    };
+    for (const ipo of ipos.data ?? []) out[bucketOf(ipo)]!.push(ipo);
+    return out;
+  }, [ipos.data]);
 
-  if (applications.isLoading) return <Loading label="Loading your portfolio…" />;
+  const staleWarning = useMemo(() => {
+    // Only the providers that actually supply the IPO list count towards
+    // freshness. The GMP feeds, the GMP backfill, the KFintech match and the
+    // cron heartbeat also write sync_log, and a run where only those succeeded
+    // would otherwise suppress a genuine "this list is days old" warning.
+    //
+    // An allowlist rather than a denylist, so adding a provider cannot silently
+    // start suppressing the warning. KFINTECH_MATCH is why that matters: it now
+    // logs ok with "skipped: already synced once" on every run, so under a
+    // denylist it always looked like a fresh successful sync.
+    const listRows = sync.data?.filter((row) => LIST_PROVIDERS.has(row.provider));
+    const lastOk = listRows?.filter((row) => row.ok).sort((a, b) => b.ran_at.localeCompare(a.ran_at))[0];
+    if (!lastOk) {
+      const failure = listRows?.[0];
+      return failure
+        ? `IPO sync is failing (${failure.provider}: ${failure.message ?? 'unknown error'}). Add IPOs manually until it recovers.`
+        : null;
+    }
+    const hours = (Date.now() - new Date(lastOk.ran_at).getTime()) / 3_600_000;
+    return hours > STALE_AFTER_HOURS
+      ? `IPO list last updated ${Math.round(hours / 24)} day(s) ago. Check details before applying.`
+      : null;
+  }, [sync.data]);
 
-  const netPnl = summary.realisedPnl + summary.unrealisedPnl;
-  const netTone = netPnl > 0 ? 'good' : netPnl < 0 ? 'bad' : 'neutral';
-  const netColor =
-    netPnl > 0 ? colors.success : netPnl < 0 ? colors.danger : colors.text;
+  if (ipos.isLoading) return <Loading label="Loading IPOs…" />;
+
+  const visible = grouped[tab] ?? [];
 
   return (
     <Screen inset>
-      <ErrorText>
-        {applications.error instanceof Error ? applications.error.message : null}
-      </ErrorText>
+      <Heading sub="Everything currently in the market, grouped by where it is in its cycle.">
+        IPOs
+      </Heading>
 
-      {/* ---- hero -------------------------------------------------------- */}
-      <Animated.View entering={FadeIn.duration(motion.slow)}>
-        <View style={styles.hero}>
-          {/* The halo is a sibling behind the text, not a shadow: Android
-              ignores coloured shadows, so a gradient is the portable way. */}
-          <LinearGradient
-            colors={netTone === 'bad' ? gradients.negative : gradients.halo}
-            style={styles.halo}
-            pointerEvents="none"
-          />
-          <Text style={styles.heroLabel}>NET POSITION</Text>
-          <AnimatedNumber
-            value={netPnl}
-            format={formatInr}
-            style={[styles.heroValue, { color: netColor }]}
-          />
-          <View style={styles.heroMeta}>
-            <Badge
-              label={`${summary.totalApplications} application${summary.totalApplications === 1 ? '' : 's'}`}
-              tone={netTone === 'good' ? 'success' : netTone === 'bad' ? 'danger' : 'muted'}
-            />
-            {summary.liveApplications > 0 && (
-              <Badge label={`${summary.liveApplications} live`} tone="accent" />
-            )}
-          </View>
-        </View>
-      </Animated.View>
+      <ErrorText>{ipos.error instanceof Error ? ipos.error.message : null}</ErrorText>
+      {staleWarning && <Banner tone="warning">{staleWarning}</Banner>}
 
-      {/* ---- headline stats ---------------------------------------------- */}
-      <Animated.View
-        entering={FadeInDown.delay(motion.stagger).duration(motion.base)}
-        style={styles.grid}
-      >
-        <StatTile
-          label="Money blocked"
-          value={formatInrCompact(summary.amountBlocked)}
-          hint={`${summary.liveApplications} live application(s)`}
-          icon="wallet"
-        />
-        <StatTile
-          label="Allotment rate"
-          icon="pie"
-          value={
-            <View style={styles.gaugeRow}>
-              <DonutGauge value={summary.allotmentRate ?? 0} size={58} thickness={7}>
-                <Text style={styles.gaugeText}>
-                  {summary.allotmentRate === null
-                    ? '—'
-                    : `${Math.round(summary.allotmentRate * 100)}%`}
-                </Text>
-              </DonutGauge>
-            </View>
-          }
-          hint={
-            summary.allotmentRate === null
-              ? 'No results yet'
-              : `${summary.allottedApplications} of ${summary.decidedApplications} decided`
-          }
-        />
-        <StatTile
-          label="Realised P&L"
-          value={formatInrCompact(summary.realisedPnl)}
-          tone={summary.realisedPnl > 0 ? 'good' : summary.realisedPnl < 0 ? 'bad' : 'neutral'}
-          hint="From shares you have sold"
-          icon="savings"
-        />
-        <StatTile
-          label="Unrealised"
-          value={formatInrCompact(summary.unrealisedPnl)}
-          tone={summary.unrealisedPnl > 0 ? 'good' : summary.unrealisedPnl < 0 ? 'bad' : 'neutral'}
-          hint="Allotted but still held"
+      <Segmented
+        value={tab}
+        onChange={setTab}
+        options={TABS.map((t) => ({ ...t, count: grouped[t.key]!.length }))}
+      />
+
+      <Button
+        title="Add an IPO manually"
+        variant="secondary"
+        icon="add"
+        onPress={() => router.push('/ipos/new')}
+      />
+
+      {visible.length === 0 ? (
+        <EmptyState
           icon="ipos"
+          title={`Nothing ${tab === 'open' ? 'open right now' : `in ${tab}`}`}
+          body="Synced IPOs appear here automatically. You can also add one by hand at any time."
         />
-      </Animated.View>
-
-      {/* ---- open right now ---------------------------------------------- */}
-      {openNow.length > 0 && (
-        <>
-          <SectionHeader title="Open right now" />
-          {openNow.map((ipo, i) => (
-            <ListRow
-              key={ipo.id}
-              index={i}
-              accent={colors.success}
-              title={ipo.company_name}
-              subtitle={`Closes ${
-                ipo.close_date
-                  ? new Date(ipo.close_date).toLocaleDateString('en-IN', {
-                      day: 'numeric',
-                      month: 'short',
-                    })
-                  : '—'
-              }`}
-              right={<Badge label="Open" tone="success" />}
+      ) : (
+        visible.map((ipo, i) => (
+          <Animated.View
+            key={ipo.id}
+            entering={FadeInDown.delay(i * motion.stagger).duration(motion.base)}
+          >
+            <Pressable
+              accessibilityRole="button"
               onPress={() => router.push(`/ipos/${ipo.id}`)}
-            />
-          ))}
-        </>
-      )}
+            >
+              <Card variant="glass" style={styles.card}>
+                <View style={[styles.rail, { backgroundColor: BUCKET_ACCENT[tab] }]} />
 
-      {/* ---- by account --------------------------------------------------- */}
-      {summary.byAccount.length > 0 && (
-        <>
-          <SectionHeader title="By account" />
-          <Card variant="glass" padded={false}>
-            {summary.byAccount.map((account, i) => (
-              <View
-                key={account.accountId}
-                style={[
-                  styles.accountRow,
-                  i === summary.byAccount.length - 1 && styles.accountRowLast,
-                ]}
-              >
+              <View style={styles.head}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.accountName}>{account.nickname}</Text>
-                  <Text style={styles.accountHint}>
-                    {account.applications} application(s)
+                  <Text style={styles.name} numberOfLines={1}>
+                    {ipo.company_name}
+                  </Text>
+                  <Text style={styles.symbol}>
+                    {ipo.symbol} · {ipo.exchange}
                   </Text>
                 </View>
-                {/* Fixed width so the rupee figures line up down the column —
-                    tabular-nums is iOS-only, so the container does the work. */}
-                <Text
-                  style={[
-                    styles.accountPnl,
-                    {
-                      color:
-                        account.pnl > 0
-                          ? colors.success
-                          : account.pnl < 0
-                            ? colors.danger
-                            : colors.textMuted,
-                    },
-                  ]}
-                  numberOfLines={1}
-                >
-                  {formatInr(account.pnl)}
-                </Text>
+                {ipo.segment === 'SME' && <Badge label="SME" tone="accent" />}
+                <Icon name="chevron" size={18} color={colors.textFaint} />
               </View>
-            ))}
-          </Card>
-        </>
-      )}
 
-      {summary.totalApplications === 0 && (
-        <EmptyState
-          icon="empty"
-          title="Nothing tracked yet"
-          body="Add a demat account, then record your first IPO application to see your numbers here."
-        />
+              <View style={styles.metaRow}>
+                {ipo.price_band_min !== null && (
+                  <Meta
+                    icon="savings"
+                    text={`${formatInr(ipo.price_band_min)}${
+                      ipo.price_band_max && ipo.price_band_max !== ipo.price_band_min
+                        ? ` – ${formatInr(ipo.price_band_max)}`
+                        : ''
+                    }`}
+                  />
+                )}
+                {ipo.lot_size ? <Meta icon="applications" text={`${ipo.lot_size}/lot`} /> : null}
+                {ipo.close_date ? (
+                  <Meta
+                    icon="calendar"
+                    text={`closes ${new Date(ipo.close_date).toLocaleDateString('en-IN', {
+                      day: 'numeric',
+                      month: 'short',
+                    })}`}
+                  />
+                ) : null}
+                </View>
+              </Card>
+            </Pressable>
+          </Animated.View>
+        ))
       )}
-
-      <Pressable style={styles.settingsRow} onPress={() => router.push('/settings')}>
-        <Icon name="settings" size={18} color={colors.textMuted} />
-        <Text style={styles.settingsText}>Settings</Text>
-        <Icon name="chevron" size={18} color={colors.textFaint} />
-      </Pressable>
     </Screen>
   );
 }
 
+function Meta({ icon, text }: { icon: 'savings' | 'applications' | 'calendar'; text: string }) {
+  return (
+    <View style={styles.meta}>
+      <Icon name={icon} size={13} color={colors.textFaint} />
+      <Text style={styles.metaText}>{text}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  hero: {
-    alignItems: 'center',
-    paddingTop: spacing.xxl,
-    paddingBottom: spacing.xl,
-    overflow: 'hidden',
-  },
-  halo: {
-    position: 'absolute',
-    top: -40,
-    width: 320,
-    height: 320,
-    borderRadius: 160,
-    opacity: 0.5,
-  },
-  heroLabel: { ...type.label, color: colors.textMuted, marginBottom: spacing.sm },
-  heroValue: { ...type.hero, textAlign: 'center' },
-  heroMeta: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
-  grid: {
+  card: { paddingLeft: spacing.lg + 4 },
+  rail: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 3 },
+  head: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  name: { ...type.heading, color: colors.text },
+  symbol: { ...type.caption, color: colors.textMuted, marginTop: 2 },
+  metaRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.md,
+    gap: spacing.lg,
     marginTop: spacing.lg,
+    flexWrap: 'wrap',
   },
-  gaugeRow: { alignItems: 'flex-start', marginTop: spacing.sm },
-  gaugeText: { ...type.bodyStrong, color: colors.text, fontSize: 15 },
-  accountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderSoft,
-  },
-  accountRowLast: { borderBottomWidth: 0 },
-  accountName: { ...type.bodyStrong, color: colors.text },
-  accountHint: { ...type.caption, color: colors.textFaint, marginTop: 2 },
-  accountPnl: { ...type.bodyStrong, fontSize: 15, minWidth: 96, textAlign: 'right' },
-  settingsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    marginTop: spacing.xl,
-    padding: spacing.lg,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.borderSoft,
-  },
-  settingsText: { ...type.body, color: colors.text, flex: 1 },
+  meta: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs + 1 },
+  metaText: { ...type.caption, color: colors.textFaint },
 });

@@ -201,13 +201,24 @@ export default function RootLayout() {
     >
       <AuthProvider>
         <VaultProvider>
-          <StatusBar style="light" />
+          {/* The chrome is white now, so the OS clock and icons must be dark. */}
+          <StatusBar style="dark" />
           <RouteGate>
             <Stack
+              /*
+               * Detail and form routes keep their native headers rather than
+               * the in-app AppHeader the tab screens use: the native one gives
+               * back the platform back-gesture, iOS back-title behaviour and
+               * Android hardware-back title sync for free, and app.json already
+               * disables the predictive back gesture. Only the tab screens need
+               * actions the native header cannot express declaratively.
+               */
               screenOptions={{
-                headerStyle: { backgroundColor: colors.bg },
-                headerTintColor: colors.text,
-                headerTitleStyle: { fontFamily: fonts.displayMedium, fontSize: 17 },
+                headerStyle: { backgroundColor: colors.surface },
+                headerTintColor: colors.navy,
+                headerTitleStyle: { fontFamily: fonts.bodySemi, fontSize: 16 },
+                // Android draws an elevation line here regardless; on iOS this
+                // removes the hairline so the header reads as one plane.
                 headerShadowVisible: false,
                 contentStyle: { backgroundColor: colors.bg },
               }}
@@ -222,7 +233,6 @@ export default function RootLayout() {
               <Stack.Screen name="applications/new" options={{ title: 'New application' }} />
               <Stack.Screen name="applications/[id]" options={{ title: 'Application' }} />
               <Stack.Screen name="applications/bulk-update" options={{ title: 'Update all' }} />
-              <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
               <Stack.Screen
                 name="settings/change-pin"
                 options={{ title: 'Change PIN' }}

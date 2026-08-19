@@ -1,12 +1,15 @@
 /**
  * Buttons.
  *
- * The primary variant is a gradient with a glow beneath it; the rest are flat
- * tonal fills. Press feedback is a scale-down driven on the UI thread by
- * reanimated, so it stays responsive even when the JS thread is busy fetching —
- * which on this app is exactly when people are tapping.
+ * Solid accent fill for the primary action, tonal fills for the rest. Press
+ * feedback is a scale-down driven on the UI thread by reanimated, so it stays
+ * responsive even when the JS thread is busy fetching — which on this app is
+ * exactly when people are tapping.
+ *
+ * Two size vocabularies coexist. `md`/`sm` is the original API that call sites
+ * use; `small`/`medium`/`large` is the design system's. They map onto the same
+ * three rows, so either spelling works.
  */
-import { LinearGradient } from 'expo-linear-gradient';
 import React from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, {
@@ -16,10 +19,27 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
-import { colors, glow, gradients, motion, radius, spacing, type } from '../../constants/theme';
+import { colors, motion, radius, spacing, type } from '../../constants/theme';
 import { Icon, type IconName } from './Icon';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
+/** `md`/`sm` are the legacy spelling; both resolve to the same three rows. */
+type Size = 'small' | 'medium' | 'large' | 'md' | 'sm';
+
+const SIZES = {
+  small: { paddingVertical: spacing.sm, paddingHorizontal: spacing.md, fontSize: 13, icon: 15 },
+  medium: { paddingVertical: spacing.md, paddingHorizontal: spacing.lg, fontSize: 14, icon: 18 },
+  large: { paddingVertical: spacing.md + 2, paddingHorizontal: spacing.xl, fontSize: 16, icon: 20 },
+} as const;
+
+const SIZE_ALIAS: Record<Size, keyof typeof SIZES> = {
+  sm: 'small',
+  small: 'small',
+  md: 'medium',
+  medium: 'medium',
+  large: 'large',
+};
 
 export function Button({
   title,
@@ -34,7 +54,7 @@ export function Button({
   onPress: () => void;
   variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
   /** `sm` is for buttons packed into a card; its container owns the spacing. */
-  size?: 'md' | 'sm';
+  size?: Size;
   loading?: boolean;
   disabled?: boolean;
   icon?: IconName;
@@ -42,19 +62,21 @@ export function Button({
   const isDisabled = disabled || loading;
   const pressed = useSharedValue(0);
   const reduceMotion = useReducedMotion();
+  const dims = SIZES[SIZE_ALIAS[size]];
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: reduceMotion ? 1 : 1 - pressed.value * 0.03 }],
     opacity: 1 - pressed.value * 0.15,
   }));
 
-  const fg =
-    variant === 'primary'
-      ? '#FFFFFF'
+  const fg = isDisabled
+    ? colors.textFaint
+    : variant === 'primary'
+      ? colors.onAccent
       : variant === 'danger'
         ? colors.danger
         : variant === 'ghost'
-          ? colors.accentBright
+          ? colors.accent
           : colors.text;
 
   return (
@@ -71,32 +93,22 @@ export function Button({
       }}
       style={[
         styles.button,
-        size === 'sm' && styles.small,
+        { paddingVertical: dims.paddingVertical, paddingHorizontal: dims.paddingHorizontal },
+        size === 'sm' || size === 'small' ? styles.small : null,
+        variant === 'primary' && styles.primary,
         variant === 'secondary' && styles.secondary,
         variant === 'danger' && styles.danger,
         variant === 'ghost' && styles.ghost,
-        variant === 'primary' && !isDisabled && glow.accent,
         isDisabled && styles.disabled,
         animatedStyle,
       ]}
     >
-      {variant === 'primary' && (
-        <LinearGradient
-          colors={gradients.primary}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={StyleSheet.absoluteFill}
-          pointerEvents="none"
-        />
-      )}
       {loading ? (
         <ActivityIndicator color={fg} />
       ) : (
         <View style={styles.inner}>
-          {icon ? <Icon name={icon} size={size === 'sm' ? 15 : 18} color={fg} /> : null}
-          <Text style={[styles.label, size === 'sm' && styles.labelSmall, { color: fg }]}>
-            {title}
-          </Text>
+          {icon ? <Icon name={icon} size={dims.icon} color={fg} /> : null}
+          <Text style={[styles.label, { fontSize: dims.fontSize, color: fg }]}>{title}</Text>
         </View>
       )}
     </AnimatedPressable>
@@ -105,25 +117,20 @@ export function Button({
 
 const styles = StyleSheet.create({
   button: {
-    borderRadius: radius.lg,
-    paddingVertical: spacing.lg,
-    paddingHorizontal: spacing.lg,
+    borderRadius: radius.md,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: spacing.md,
-    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
-  small: {
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.md,
-    marginBottom: 0,
-  },
-  secondary: { backgroundColor: colors.surfaceRaised },
-  danger: { backgroundColor: colors.dangerSoft },
+  small: { marginBottom: 0 },
+  primary: { backgroundColor: colors.accent },
+  /** Outlined: the design system's secondary action. */
+  secondary: { backgroundColor: colors.surface, borderColor: colors.border },
+  danger: { backgroundColor: colors.surface, borderColor: colors.danger },
   ghost: { backgroundColor: 'transparent' },
-  disabled: { opacity: 0.45 },
+  disabled: { backgroundColor: colors.border, borderColor: 'transparent' },
   inner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  label: { ...type.bodyStrong, fontSize: 15 },
-  labelSmall: { fontSize: 13, lineHeight: 18 },
+  label: { ...type.bodyStrong },
 });

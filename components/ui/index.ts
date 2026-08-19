@@ -15,6 +15,8 @@ export { DonutGauge, Sparkline } from './charts';
 export { StatTile, ListRow } from './StatTile';
 export { Segmented } from './Segmented';
 export { BrandMark } from './BrandMark';
+export { Avatar, initialsFrom } from './Avatar';
+export { AppHeader, HeaderAction } from './AppHeader';
 export {
   AllotmentCheckResults,
   type AllotmentCheckResultTone,

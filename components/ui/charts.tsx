@@ -4,8 +4,9 @@
  * DonutGauge  — one ratio, shown as an arc. Replaces "68%" as plain text.
  * Sparkline   — a run of values, shown as a trend with a fading area fill.
  *
- * Both are SVG and both take their colours from the gradient tokens so a
- * palette change reaches them. Neither animates its path: morphing an SVG path
+ * Both are SVG and both take their colours from `colors.chart` so a palette
+ * change reaches them. Charts are the one place a gradient still earns its
+ * keep — ordinary surfaces in this palette are flat. Neither animates its path: morphing an SVG path
  * per frame is the expensive kind of animation, and the count-up beside them
  * already carries the motion.
  */
@@ -13,14 +14,14 @@ import React, { useId } from 'react';
 import { View } from 'react-native';
 import Svg, { Circle, Defs, LinearGradient as SvgGradient, Path, Stop } from 'react-native-svg';
 
-import { colors, gradients } from '../../constants/theme';
+import { colors } from '../../constants/theme';
 
 export function DonutGauge({
   /** 0–1. Values outside are clamped. */
   value,
   size = 92,
   thickness = 9,
-  colorStops = gradients.chartAccent,
+  colorStops = colors.chart.accent,
   children,
 }: {
   value: number;
@@ -99,7 +100,7 @@ export function Sparkline({
 
   const line = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
   const area = `${line} L${width},${height} L0,${height} Z`;
-  const stops = positive ? gradients.chartPositive : gradients.negative;
+  const stops = positive ? colors.chart.positive : colors.chart.negative;
 
   return (
     <Svg width={width} height={height}>

@@ -1,48 +1,51 @@
 /**
  * Card surfaces.
  *
- * Three variants, each a different height above the ground:
- *   glass  — translucent, lets the gradient through. The default.
- *   raised — opaque and elevated, for things that should feel actionable.
- *   flat   — no shadow, for cards nested inside another card.
+ * A card is white on the grey ground; separation comes from a shadow, not from
+ * a fill colour, so the four elevations differ only in how far they lift. The
+ * design system's own scale is 0–3 and `elevation` is the prop that expresses
+ * it.
  *
- * Every card carries a one-pixel sheen along its top edge. That highlight is
- * what sells "lit from above" and is the cheapest depth cue available — it
- * costs one gradient view and no blur.
+ * `variant` is the older API and is kept because ~15 screens pass it. It maps
+ * onto the same scale: glass → 1, raised → 2, flat → 0. New code should pass
+ * `elevation` directly; the names describe a translucency that the light
+ * palette no longer has.
  */
-import { LinearGradient } from 'expo-linear-gradient';
 import React from 'react';
 import { StyleSheet, View, type ViewStyle } from 'react-native';
 
-import { colors, elevation, gradients, radius, spacing } from '../../constants/theme';
+import { colors, elevation as shadows, radius, spacing } from '../../constants/theme';
+
+const VARIANT_ELEVATION = { glass: 1, raised: 2, flat: 0 } as const;
 
 export function Card({
   children,
   style,
   variant = 'glass',
+  elevation,
   padded = true,
 }: {
   children: React.ReactNode;
   style?: ViewStyle;
   variant?: 'glass' | 'raised' | 'flat';
+  /** Takes precedence over `variant` when both are given. */
+  elevation?: 0 | 1 | 2 | 3;
   padded?: boolean;
 }) {
+  const level = elevation ?? VARIANT_ELEVATION[variant];
+
   return (
     <View
       style={[
         styles.card,
-        variant === 'glass' && styles.glass,
-        variant === 'raised' && styles.raised,
-        variant === 'flat' && styles.flat,
+        shadows[level],
+        // At rest a card is defined by its shadow. Level 0 has none, so it
+        // needs the hairline to separate it from the surface behind it.
+        level === 0 && styles.hairline,
         padded && { padding: spacing.lg },
         style,
       ]}
     >
-      <LinearGradient
-        colors={gradients.cardSheen}
-        style={styles.sheen}
-        pointerEvents="none"
-      />
       {children}
     </View>
   );
@@ -50,34 +53,12 @@ export function Card({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: radius.xl,
-    borderWidth: 1,
-    marginBottom: spacing.md,
-    overflow: 'hidden',
-  },
-  glass: {
-    backgroundColor: colors.surfaceGlass,
-    borderColor: colors.borderSoft,
-    ...elevation.low,
-  },
-  raised: {
-    backgroundColor: colors.surfaceRaised,
-    borderColor: colors.border,
-    ...elevation.medium,
-  },
-  flat: {
     backgroundColor: colors.surface,
-    borderColor: colors.borderSoft,
+    borderRadius: radius.md,
+    marginBottom: spacing.md,
   },
-  /**
-   * Only the top ~40% catches the light. Taller than this and it stops reading
-   * as a highlight and starts reading as a second background colour.
-   */
-  sheen: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    height: '40%',
+  hairline: {
+    borderWidth: 1,
+    borderColor: colors.border,
   },
 });
