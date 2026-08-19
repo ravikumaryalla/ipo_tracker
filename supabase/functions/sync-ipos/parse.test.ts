@@ -550,6 +550,16 @@ describe('ipowatchIpoRow', () => {
     expect(ipowatchIpoRow(GMP_ROW, withSymbol, prior, '2026-08-11')?.symbol).toBe('BEHARILAL');
   });
 
+  it('never uses a BSE symbol — a BSE-vs-NSE symbol mismatch was creating duplicate rows for the same company', () => {
+    const bseOnly = new Map(LISTING_BY_NAME).set(normalizeName('Behari Lal Engineering'), {
+      ...LISTING_BY_NAME.get(normalizeName('Behari Lal Engineering'))!,
+      bse_symbol: 'BEHARILALBSE',
+    });
+    expect(ipowatchIpoRow(GMP_ROW, bseOnly, new Map(), '2026-08-11')?.symbol).toBe(
+      'BEHARILALENGINEERING',
+    );
+  });
+
   it('excludes SME issues entirely — this sync only tracks Mainboard', () => {
     expect(
       ipowatchIpoRow({ ...GMP_ROW, type_cell: 'NSE SME' }, new Map(), new Map(), '2026-08-11'),

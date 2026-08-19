@@ -170,25 +170,31 @@ export default function ApplicationsTab() {
     },
   });
 
-  if (applications.isLoading) return <Loading label="Loading applications…" />;
-
-  return (
-    <Screen
-      inset
-      header={
-        <AppHeader
-          title="Allotment Status"
-          right={
-            <HeaderAction
-              icon="add"
-              label="Record an application"
-              color={colors.accent}
-              onPress={() => router.push('/applications/new')}
-            />
-          }
+  // Hoisted so the loading state keeps the header — see the same note on Home.
+  const header = (
+    <AppHeader
+      title="Allotment Status"
+      right={
+        <HeaderAction
+          icon="add"
+          label="Record an application"
+          color={colors.accent}
+          onPress={() => router.push('/applications/new')}
         />
       }
-    >
+    />
+  );
+
+  if (applications.isLoading) {
+    return (
+      <Screen inset header={header}>
+        <Loading label="Loading applications…" />
+      </Screen>
+    );
+  }
+
+  return (
+    <Screen inset header={header}>
       <ErrorText>
         {applications.error instanceof Error ? applications.error.message : null}
       </ErrorText>

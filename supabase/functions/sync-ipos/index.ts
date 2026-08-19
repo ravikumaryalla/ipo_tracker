@@ -184,7 +184,18 @@ const fetchNse: Provider = async () => {
 // provider: BSE
 // ---------------------------------------------------------------------------
 
-const fetchBse: Provider = async () => {
+const fetchBse: Provider = async (prior) => {
+  // NSE runs first, so reuse whatever symbol it already chose for the same
+  // company/open_date rather than inventing a second row under BSE's own
+  // scrip code — that mismatch was creating a duplicate `ipos` row for every
+  // dual-listed company. A BSE-only issue (no NSE match) still falls back to
+  // its own scrip code below.
+  const priorSymbols = new Map<string, string>();
+  for (const record of prior) {
+    if (!record.open_date) continue;
+    priorSymbols.set(`${normalizeName(record.company_name)}|${record.open_date}`, record.symbol);
+  }
+
   const res = await fetch(
     'https://api.bseindia.com/BseIndiaAPI/api/GetPublicIssues/w?Ftype=1&Fdate=&Tdate=',
     { headers: { ...BROWSER_HEADERS, Referer: 'https://www.bseindia.com/' } },
@@ -203,10 +214,17 @@ const fetchBse: Provider = async () => {
     const open = parseDate(row.Issue_Open_Date ?? row.StartDate);
     const close = parseDate(row.Issue_Close_Date ?? row.EndDate);
 
+    const priorSymbol = open ? priorSymbols.get(`${normalizeName(name)}|${open}`) : undefined;
+    const symbol = (priorSymbol ?? String(row.scrip_cd ?? row.Scrip_Id ?? name.slice(0, 12)))
+      .trim()
+      .toUpperCase();
+
     records.push({
-      symbol: String(row.scrip_cd ?? row.Scrip_Id ?? name.slice(0, 12)).trim().toUpperCase(),
+      symbol,
       company_name: name,
-      exchange: 'BSE',
+      // Reusing NSE's symbol means this upsert lands on NSE's row — keep it
+      // labelled NSE rather than relabelling a dual-listed issue as BSE-only.
+      exchange: priorSymbol ? 'NSE' : 'BSE',
       segment: String(row.Issue_Type ?? '').toUpperCase().includes('SME') ? 'SME' : 'MAINBOARD',
       status: statusFor(open, close),
       open_date: open,

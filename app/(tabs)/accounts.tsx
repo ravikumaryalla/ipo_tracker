@@ -46,27 +46,33 @@ export default function AccountsTab() {
   const brokerName = (id: string | null) =>
     brokers.data?.find((b) => b.id === id)?.name ?? 'Unknown broker';
 
-  if (accounts.isLoading) return <Loading label="Loading accounts…" />;
+  // Hoisted so the loading state keeps the header — see the same note on Home.
+  const header = (
+    <AppHeader
+      title="Demat Accounts"
+      right={
+        <HeaderAction
+          icon="add"
+          label="Add demat account"
+          color={colors.accent}
+          onPress={() => router.push('/accounts/new')}
+        />
+      }
+    />
+  );
+
+  if (accounts.isLoading) {
+    return (
+      <Screen inset header={header}>
+        <Loading label="Loading accounts…" />
+      </Screen>
+    );
+  }
 
   const total = accounts.data?.length ?? 0;
 
   return (
-    <Screen
-      inset
-      header={
-        <AppHeader
-          title="Demat Accounts"
-          right={
-            <HeaderAction
-              icon="add"
-              label="Add demat account"
-              color={colors.accent}
-              onPress={() => router.push('/accounts/new')}
-            />
-          }
-        />
-      }
-    >
+    <Screen inset header={header}>
       <ErrorText>{accounts.error instanceof Error ? accounts.error.message : null}</ErrorText>
 
       {total === 0 ? (

@@ -3,7 +3,15 @@
  * around inclusive boundaries — exactly the kind of logic that quietly goes
  * wrong on the open and close days themselves.
  */
-import { bucketOf, gmpIsStale, gmpTrend, latestGmp, pickGmpProvider } from './ipos';
+import {
+  bucketOf,
+  gmpIsStale,
+  gmpTrend,
+  indexGmpByIpo,
+  type LatestGmp,
+  latestGmp,
+  pickGmpProvider,
+} from './ipos';
 import type { Ipo, IpoGmp } from '../types';
 
 function ipo(patch: Partial<Ipo>): Ipo {
@@ -97,6 +105,32 @@ function gmpAt(observed_at: string, gmp: number | null, provider = 'IPOWATCH'): 
     created_at: observed_at,
   };
 }
+
+describe('indexGmpByIpo', () => {
+  const row = (ipo_id: string): LatestGmp => ({
+    ...gmpAt('2026-08-10T10:00:00Z', 5),
+    ipo_id,
+  });
+
+  it('keys the readings by ipo_id', () => {
+    const index = indexGmpByIpo([row('i1'), row('i2')]);
+    expect(index.get('i1')?.ipo_id).toBe('i1');
+    expect(index.get('i2')?.ipo_id).toBe('i2');
+  });
+
+  it('is an empty Map when the query has not resolved yet', () => {
+    expect(indexGmpByIpo(undefined).size).toBe(0);
+  });
+
+  /**
+   * An earlier build cached this query as a Map, which the AsyncStorage
+   * persister serialised to `{}`. Upgrading devices rehydrate that value
+   * before the first refetch replaces it, so this must not throw.
+   */
+  it('survives the `{}` a previously-persisted Map rehydrates into', () => {
+    expect(indexGmpByIpo({} as unknown as LatestGmp[]).size).toBe(0);
+  });
+});
 
 describe('latestGmp', () => {
   it('takes the last reading, since the series arrives oldest-first', () => {

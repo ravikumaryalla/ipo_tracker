@@ -28,11 +28,17 @@ export function Screen({
 }) {
   const insets = useSafeAreaInsets();
   const bottomPad = spacing.xxl + (inset ? 64 + insets.bottom : 0);
-  // A screen-level header already clears the status bar and owns its own top
-  // padding, so the content below it starts at zero. Routes rendering through
-  // Screen otherwise have no native header (those that do get status-bar
-  // clearance for free), so this is unconditional, not tied to `inset`.
-  const topPad = header ? 0 : insets.top + spacing.lg;
+  // A screen-level header owns the *status bar* clearance (AppHeader pads
+  // itself by insets.top), so content below it must not add that inset a
+  // second time — but it still needs its own padding, the same spacing.lg
+  // that styles.content/styles.flat already apply on the other three sides.
+  // Collapsing this to 0 leaves the first card flush against the header's
+  // hairline, which on Home reads as the hero merging into the header.
+  //
+  // Routes rendering through Screen otherwise have no native header (those
+  // that do get status-bar clearance for free), so this is unconditional,
+  // not tied to `inset`.
+  const topPad = header ? spacing.lg : insets.top + spacing.lg;
 
   // Scrolled content would otherwise slide underneath the status bar (the app
   // runs edge-to-edge, so the OS draws the clock/network/battery icons

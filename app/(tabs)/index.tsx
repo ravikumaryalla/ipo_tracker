@@ -44,6 +44,7 @@ import { colors, formatInr, motion, spacing, type } from '../../constants/theme'
 import { listApplications, summarise } from '../../lib/db/applications';
 import {
   bucketOf,
+  indexGmpByIpo,
   latestGmpByIpo,
   latestSyncStatus,
   listIpos,
@@ -158,6 +159,10 @@ export default function Home() {
   const sync = useQuery({ queryKey: ['syncStatus'], queryFn: latestSyncStatus });
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
   const gmp = useQuery({ queryKey: ['gmp-latest'], queryFn: latestGmpByIpo });
+  // Indexed here rather than in the query function: the persisted cache is
+  // JSON, so a Map returned by the query would rehydrate as {} — see
+  // latestGmpByIpo.
+  const gmpByIpo = useMemo(() => indexGmpByIpo(gmp.data), [gmp.data]);
 
   const summary = useMemo(() => summarise(applications.data ?? []), [applications.data]);
 
@@ -193,27 +198,36 @@ export default function Home() {
       : null;
   }, [sync.data]);
 
-  if (ipos.isLoading) return <Loading label="Loading IPOs…" />;
+  // Hoisted so the loading state renders through Screen with the same header
+  // rather than as a bare spinner: without it the screen has no header and no
+  // safe-area inset while loading, so the spinner sits under the status bar
+  // and the layout jumps once data lands.
+  const header = (
+    <AppHeader
+      title="IPO Tracker"
+      right={
+        <HeaderAction
+          icon="add"
+          label="Add an IPO manually"
+          color={colors.accent}
+          onPress={() => router.push('/ipos/new')}
+        />
+      }
+    />
+  );
+
+  if (ipos.isLoading) {
+    return (
+      <Screen inset header={header}>
+        <Loading label="Loading IPOs…" />
+      </Screen>
+    );
+  }
 
   const visible = grouped[tab];
 
   return (
-    <Screen
-      inset
-      header={
-        <AppHeader
-          title="IPO Tracker"
-          right={
-            <HeaderAction
-              icon="add"
-              label="Add an IPO manually"
-              color={colors.accent}
-              onPress={() => router.push('/ipos/new')}
-            />
-          }
-        />
-      }
-    >
+    <Screen inset header={header}>
       {/* ---- portfolio header --------------------------------------------
           The two figures that bear on "should I act on something open right
           now?": how much is already tied up, and how often applying actually
@@ -274,7 +288,7 @@ export default function Home() {
               : metric.tone === 'bad'
                 ? colors.danger
                 : colors.text;
-          const gmpMetric = gmpFigure(gmp.data?.get(ipo.id), tab);
+          const gmpMetric = gmpFigure(gmpByIpo.get(ipo.id), tab);
           const gmpColor =
             gmpMetric?.tone === 'good'
               ? colors.success

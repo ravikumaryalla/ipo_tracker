@@ -104,21 +104,42 @@ export function pickGmpProvider(rows: IpoGmp[]): IpoGmp[] {
   return fallback ? rows.filter((row) => row.provider === fallback) : [];
 }
 
+/** A v_ipo_latest_gmp row, which always carries the ipo_id the view keys on. */
+export type LatestGmp = IpoGmp & { ipo_id: string };
+
 /**
  * Latest GMP reading for every IPO that has one, in a single query.
  *
  * Backed by v_ipo_latest_gmp, which already picks the preferred provider per
  * IPO in Postgres (same preference order as pickGmpProvider) — so the list
  * screen can show a GMP figure on every card without a query per row.
+ *
+ * Returns a plain array, NOT a Map keyed by ipo_id, however much the callers
+ * would prefer one: the query cache is persisted to AsyncStorage as JSON
+ * (see app/_layout.tsx), and JSON.stringify turns a Map into `{}`. A Map
+ * therefore works until the app is restarted and the cache rehydrates, at
+ * which point every caller's `.get` is undefined. Callers index this
+ * themselves — see indexGmpByIpo.
  */
-export async function latestGmpByIpo(): Promise<Map<string, IpoGmp>> {
+export async function latestGmpByIpo(): Promise<LatestGmp[]> {
   const { data, error } = await supabase.from('v_ipo_latest_gmp').select('*');
   if (error) throw dbError(error);
-  return new Map(
-    (data ?? [])
-      .filter((row): row is IpoGmp & { ipo_id: string } => row.ipo_id !== null)
-      .map((row) => [row.ipo_id, row]),
-  );
+  return (data ?? []).filter((row): row is LatestGmp => row.ipo_id !== null);
+}
+
+/**
+ * ipo_id → reading, for the screens that want a lookup rather than a list.
+ *
+ * The Array.isArray guard is load-bearing, not defensive habit: an earlier
+ * build cached this query as a Map, which the AsyncStorage persister wrote
+ * out as `{}`. Devices upgrading from it rehydrate that `{}` into `data`
+ * before the first refetch replaces it, and `{}.map` is not a function — so
+ * without this the fix for the Map bug would crash on exactly the devices
+ * that hit the Map bug.
+ */
+export function indexGmpByIpo(rows: LatestGmp[] | undefined): Map<string, LatestGmp> {
+  if (!Array.isArray(rows)) return new Map();
+  return new Map(rows.map((row) => [row.ipo_id, row]));
 }
 
 /**
