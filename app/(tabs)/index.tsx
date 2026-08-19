@@ -1,10 +1,17 @@
 /**
  * Home.
  *
- * The IPO list, with a condensed portfolio header above the filter. That header
- * is the surviving half of the old dashboard: net position and the two figures
- * that qualify it. The rest of that screen — the allotment gauge and the
- * per-account breakdown — moved to Profile, where there is room to read it.
+ * The IPO list, with a condensed portfolio header above the filter.
+ *
+ * That header carries the two numbers that bear on the decision this screen
+ * exists for — whether to act on something that is open right now: how much
+ * money is already tied up, and how often applying has actually worked out.
+ * Net P&L is a retrospective figure and deliberately is not here; it is on
+ * Profile, alongside the per-account breakdown that explains it.
+ *
+ * Profile shows the same allotment rate in more detail. The duplication is
+ * intended: this one is a glance, that one carries the sentence that explains
+ * the number.
  *
  * Each row carries the metric that matters for where the IPO is in its cycle.
  * Grey-market premium is deliberately not among them: it lives in `ipo_gmp` and
@@ -24,6 +31,7 @@ import {
   Badge,
   Banner,
   Card,
+  DonutGauge,
   EmptyState,
   ErrorText,
   HeaderAction,
@@ -31,14 +39,7 @@ import {
   Screen,
   Segmented,
 } from '../../components/ui';
-import {
-  colors,
-  formatInr,
-  formatInrCompact,
-  motion,
-  spacing,
-  type,
-} from '../../constants/theme';
+import { colors, formatInr, motion, spacing, type } from '../../constants/theme';
 import { listApplications, summarise } from '../../lib/db/applications';
 import { bucketOf, latestSyncStatus, listIpos, type IpoBucket } from '../../lib/db/ipos';
 import type { Ipo } from '../../lib/types';
@@ -171,8 +172,6 @@ export default function Home() {
   if (ipos.isLoading) return <Loading label="Loading IPOs…" />;
 
   const visible = grouped[tab];
-  const netPnl = summary.realisedPnl + summary.unrealisedPnl;
-  const netColor = netPnl > 0 ? colors.success : netPnl < 0 ? colors.danger : colors.text;
 
   return (
     <Screen
@@ -191,22 +190,38 @@ export default function Home() {
         />
       }
     >
-      {/* ---- portfolio header -------------------------------------------- */}
+      {/* ---- portfolio header --------------------------------------------
+          The two figures that bear on "should I act on something open right
+          now?": how much is already tied up, and how often applying actually
+          works out. Net P&L is retrospective and lives on Profile instead. */}
       <Card elevation={1} style={styles.summary}>
-        <Text style={styles.summaryLabel}>NET POSITION</Text>
-        <AnimatedNumber
-          value={netPnl}
-          format={formatInr}
-          style={[styles.summaryValue, { color: netColor }]}
-        />
-        <View style={styles.summaryMeta}>
-          <Text style={styles.summaryMetaText}>
-            {formatInrCompact(summary.amountBlocked)} blocked
-          </Text>
-          <View style={styles.summaryDot} />
-          <Text style={styles.summaryMetaText}>
-            {summary.liveApplications} live · {summary.totalApplications} total
-          </Text>
+        <View style={styles.summaryRow}>
+          <View style={styles.summaryFigure}>
+            <Text style={styles.summaryLabel}>AMOUNT BLOCKED</Text>
+            {/* Neutral colour: money blocked is a fact about exposure, not good
+                or bad news, so it does not take the success/danger tinting. */}
+            <AnimatedNumber
+              value={summary.amountBlocked}
+              format={formatInr}
+              style={styles.summaryValue}
+            />
+            <Text style={styles.summaryMetaText}>
+              {summary.liveApplications} live · {summary.totalApplications} total
+            </Text>
+          </View>
+
+          <View style={styles.luck}>
+            <DonutGauge value={summary.allotmentRate ?? 0} size={64} thickness={7}>
+              {/* An em dash rather than 0%: nothing decided yet is a different
+                  statement from never having been allotted. */}
+              <Text style={styles.luckValue}>
+                {summary.allotmentRate === null
+                  ? '—'
+                  : `${Math.round(summary.allotmentRate * 100)}%`}
+              </Text>
+            </DonutGauge>
+            <Text style={styles.luckLabel}>Allotment luck</Text>
+          </View>
         </View>
       </Card>
 
@@ -294,21 +309,14 @@ export default function Home() {
 
 const styles = StyleSheet.create({
   summary: { marginBottom: spacing.lg },
+  summaryRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.lg },
+  summaryFigure: { flex: 1, minWidth: 0 },
   summaryLabel: { ...type.label, color: colors.textMuted, fontSize: 10.5 },
-  summaryValue: { ...type.hero, marginTop: spacing.xs },
-  summaryMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    marginTop: spacing.sm,
-  },
-  summaryMetaText: { ...type.caption, color: colors.textMuted },
-  summaryDot: {
-    width: 3,
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: colors.textFaint,
-  },
+  summaryValue: { ...type.hero, color: colors.text, marginTop: spacing.xs },
+  summaryMetaText: { ...type.caption, color: colors.textMuted, marginTop: spacing.xs },
+  luck: { alignItems: 'center', gap: spacing.xs },
+  luckValue: { ...type.bodyStrong, color: colors.text, fontSize: 14 },
+  luckLabel: { ...type.caption, color: colors.textMuted, fontSize: 11 },
   head: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   headText: { flex: 1, minWidth: 0 },
   name: { ...type.heading, color: colors.text },
