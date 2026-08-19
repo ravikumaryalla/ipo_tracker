@@ -96,6 +96,10 @@ export type Ipo = {
   registrar_url: string | null;
   /** KFintech's internal clientId for this issue's allotment-status lookup. Null unless matched. */
   kfintech_company_id: string | null;
+  /** Bigshare's internal company id for this issue's allotment-status lookup. Null unless matched. */
+  bigshare_company_id: string | null;
+  /** MUFG Intime's internal company id for this issue's allotment-status lookup. Null unless matched. */
+  mufg_company_id: string | null;
   source: string;
   created_by: string | null;
   last_synced_at: string | null;
@@ -156,7 +160,10 @@ export type ApplicationPnl = {
   amount_currently_blocked: number;
   realised_pnl: number;
   unrealised_pnl: number;
+  registrar: string | null;
   kfintech_company_id: string | null;
+  bigshare_company_id: string | null;
+  mufg_company_id: string | null;
 };
 
 export type CredentialHistoryRow = {

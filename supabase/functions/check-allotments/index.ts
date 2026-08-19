@@ -1,6 +1,8 @@
 /**
- * check-allotments — checks KFintech allotment status and writes the result
- * straight into public.ipo_applications. Two entry points:
+ * check-allotments — checks KFintech, Bigshare, or MUFG Intime allotment
+ * status (whichever registrar an application's IPO is matched to — see
+ * resolveProvider) and
+ * writes the result straight into public.ipo_applications. Two entry points:
  *
  *  - Scheduled (no request body): every application still waiting on a
  *    result, gated by whether its IPO's allotment_date is due yet (see
@@ -9,7 +11,7 @@
  *    "Check status" button. Runs the identical check/persist logic against
  *    exactly the ids named, skipping the due-date gate — an explicit user
  *    tap is its own justification, unlike the sweep, which needs the gate
- *    to avoid hammering KFintech before results are plausibly out.
+ *    to avoid hammering the registrar before results are plausibly out.
  *
  * This only exists because PAN became a plain column
  * (see supabase/migrations/20260811000007_pan_plaintext.sql) — that was a
@@ -34,8 +36,8 @@
  * Once midnight passes the sweep gives up for good and the on-demand path
  * below is the only way an unresolved application gets checked again.
  *
- * A WORD OF WARNING, same as sync-ipos: the KFintech endpoint below is
- * undocumented, reverse-engineered from their own frontend bundle. It can
+ * A WORD OF WARNING, same as sync-ipos: both registrar endpoints below are
+ * undocumented, reverse-engineered from their own frontends. Either can
  * change shape without notice. This function is written to degrade rather
  * than break: one application's failure never stops the batch. Only the
  * scheduled sweep is recorded in public.sync_log — logging every on-demand
@@ -47,6 +49,8 @@
  */
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 
+import { bigshareStatusFor, parseBigshareAllotmentBody } from './bigshare.ts';
+import { encryptMufgToken, mufgStatusFor, parseMufgAllotmentBody } from './mufg.ts';
 import {
   type AllotmentOutcome,
   isAllotmentCheckDue,
@@ -63,6 +67,12 @@ const BROWSER_HEADERS = {
 
 const KFINTECH_QUERY_URL =
   'https://0uz601ms56.execute-api.ap-south-1.amazonaws.com/prod/api/query?type=pan';
+const BIGSHARE_QUERY_URL = 'https://ipo.bigshareonline.com/Data.aspx/FetchIpodetails';
+const MUFG_BASE = 'https://in.mpms.mufg.com/Initial_Offer';
+const MUFG_TOKEN_URL = `${MUFG_BASE}/IPO.aspx/generateToken`;
+const MUFG_QUERY_URL = `${MUFG_BASE}/IPO.aspx/SearchOnPan`;
+
+type Provider = 'KFINTECH' | 'BIGSHARE' | 'MUFG';
 
 type CandidateRow = {
   id: string;
@@ -72,6 +82,8 @@ type CandidateRow = {
   ipos: {
     company_name: string;
     kfintech_company_id: string | null;
+    bigshare_company_id: string | null;
+    mufg_company_id: string | null;
     allotment_date: string | null;
   } | null;
   demat_accounts: { pan: string | null } | null;
@@ -84,15 +96,31 @@ type DueRow = {
   companyName: string;
   shares_applied: number;
   application_no: string | null;
+  provider: Provider;
   companyId: string;
   pan: string;
 };
+
+/**
+ * Which registrar an application's IPO is matched to, or null if neither
+ * sync-ipos leg has found a company id for it yet. An issue only ever has
+ * one registrar, so KFintech is checked first arbitrarily — there's no case
+ * where both are populated.
+ */
+function resolveProvider(
+  ipo: CandidateRow['ipos'],
+): { provider: Provider; companyId: string } | null {
+  if (ipo?.kfintech_company_id) return { provider: 'KFINTECH', companyId: ipo.kfintech_company_id };
+  if (ipo?.bigshare_company_id) return { provider: 'BIGSHARE', companyId: ipo.bigshare_company_id };
+  if (ipo?.mufg_company_id) return { provider: 'MUFG', companyId: ipo.mufg_company_id };
+  return null;
+}
 
 async function loadCandidates(client: SupabaseClient): Promise<CandidateRow[]> {
   const { data, error } = await client
     .from('ipo_applications')
     .select(
-      'id, user_id, shares_applied, application_no, ipos(company_name, kfintech_company_id, allotment_date), demat_accounts(pan)',
+      'id, user_id, shares_applied, application_no, ipos(company_name, kfintech_company_id, bigshare_company_id, mufg_company_id, allotment_date), demat_accounts(pan)',
     )
     .eq('status', 'APPLIED');
   if (error) throw error;
@@ -102,10 +130,10 @@ async function loadCandidates(client: SupabaseClient): Promise<CandidateRow[]> {
 function dueRows(candidates: CandidateRow[], nowIso: string): DueRow[] {
   const due: DueRow[] = [];
   for (const row of candidates) {
-    const companyId = row.ipos?.kfintech_company_id;
+    const resolved = resolveProvider(row.ipos);
     const allotmentDate = row.ipos?.allotment_date;
     const pan = row.demat_accounts?.pan;
-    if (!companyId || !allotmentDate || !pan) continue;
+    if (!resolved || !allotmentDate || !pan) continue;
     if (!isAllotmentCheckDue(allotmentDate, nowIso)) continue;
     due.push({
       id: row.id,
@@ -113,7 +141,8 @@ function dueRows(candidates: CandidateRow[], nowIso: string): DueRow[] {
       companyName: row.ipos?.company_name ?? 'your IPO',
       shares_applied: row.shares_applied,
       application_no: row.application_no,
-      companyId,
+      provider: resolved.provider,
+      companyId: resolved.companyId,
       pan,
     });
   }
@@ -149,43 +178,145 @@ async function touchCheckedAt(
     .in('id', ids);
 }
 
-async function checkOne(
-  client: SupabaseClient,
-  row: DueRow,
-): Promise<CheckResult> {
+type ProviderCheckResult =
+  | { outcome: 'not-yet' }
+  | { outcome: 'resolved'; status: AllotmentOutcome; sharesAllotted: number };
+
+async function checkOneKfintech(row: DueRow): Promise<ProviderCheckResult> {
+  const res = await fetch(KFINTECH_QUERY_URL, {
+    headers: {
+      ...BROWSER_HEADERS,
+      reqparam: row.pan,
+      client_id: row.companyId,
+    },
+  });
+
+  if (res.status === 404) return { outcome: 'not-yet' };
+  if (res.status === 429) throw new Error('KFintech is rate-limiting allotment checks');
+  if (!res.ok) throw new Error(`KFintech allotment check responded ${res.status}`);
+
+  const body = await res.json().catch(() => null);
+  const matches = parseKfintechAllotmentBody(body);
+  if (!matches) return { outcome: 'not-yet' };
+
+  const match = pickMatch(matches, row.application_no);
+  const status: AllotmentOutcome = statusFor(match, row.shares_applied);
+  return { outcome: 'resolved', status, sharesAllotted: match.sharesAllotted };
+}
+
+/**
+ * Bigshare's response is always a single object, never an array — it
+ * resolves (company, PAN) to one application server-side, so there's no
+ * pickMatch-style disambiguation to do here. See bigshare.ts for why
+ * bigshareStatusFor never returns PARTIAL.
+ */
+async function checkOneBigshare(row: DueRow): Promise<ProviderCheckResult> {
+  const res = await fetch(BIGSHARE_QUERY_URL, {
+    method: 'POST',
+    headers: {
+      ...BROWSER_HEADERS,
+      'Content-Type': 'application/json; charset=UTF-8',
+      Origin: 'https://ipo.bigshareonline.com',
+      Referer: 'https://ipo.bigshareonline.com/ipo_status.html',
+      'X-Requested-With': 'XMLHttpRequest',
+    },
+    body: JSON.stringify({
+      Applicationno: '',
+      Company: row.companyId,
+      SelectionType: 'PN',
+      PanNo: row.pan,
+      txtcsdl: '',
+      txtDPID: '',
+      txtClId: '',
+      ddlType: '0',
+      lang: 'en',
+    }),
+  });
+
+  if (res.status === 429) throw new Error('Bigshare is rate-limiting allotment checks');
+  if (!res.ok) throw new Error(`Bigshare allotment check responded ${res.status}`);
+
+  const body = await res.json().catch(() => null);
+  const match = parseBigshareAllotmentBody(body);
+  if (!match) return { outcome: 'not-yet' };
+
+  const { status, sharesAllotted } = bigshareStatusFor(
+    match.allotedText,
+    match.sharesApplied ?? row.shares_applied,
+  );
+  return { outcome: 'resolved', status, sharesAllotted };
+}
+
+/**
+ * Fetches a fresh session token and encrypts it exactly the way MUFG's own
+ * public-issues.html does client-side (see mufg.ts's header comment) before
+ * every query — generateToken issues a new one per call, so this can't be
+ * cached across rows.
+ */
+async function fetchMufgToken(): Promise<string> {
+  const res = await fetch(MUFG_TOKEN_URL, {
+    method: 'POST',
+    headers: { ...BROWSER_HEADERS, 'Content-Type': 'application/json;charset:utf-8' },
+    body: '{}',
+  });
+  if (!res.ok) throw new Error(`MUFG generateToken responded ${res.status}`);
+  const body = await res.json().catch(() => null);
+  const raw = typeof body?.d === 'string' ? body.d : '';
+  if (!raw) throw new Error('MUFG generateToken returned no token');
+  return encryptMufgToken(raw);
+}
+
+async function checkOneMufg(row: DueRow): Promise<ProviderCheckResult> {
+  const token = await fetchMufgToken();
+
+  const res = await fetch(MUFG_QUERY_URL, {
+    method: 'POST',
+    headers: {
+      ...BROWSER_HEADERS,
+      'Content-Type': 'application/json; charset=UTF-8',
+      Origin: 'https://in.mpms.mufg.com',
+      Referer: 'https://in.mpms.mufg.com/Initial_Offer/public-issues.html',
+      'X-Requested-With': 'XMLHttpRequest',
+    },
+    body: JSON.stringify({
+      clientid: row.companyId,
+      PAN: row.pan,
+      IFSC: '',
+      CHKVAL: '1',
+      token,
+    }),
+  });
+
+  if (res.status === 429) throw new Error('MUFG is rate-limiting allotment checks');
+  if (!res.ok) throw new Error(`MUFG allotment check responded ${res.status}`);
+
+  const body = await res.json().catch(() => null);
+  const match = parseMufgAllotmentBody(body);
+  if (!match) return { outcome: 'not-yet' };
+
+  const status = mufgStatusFor(match, row.shares_applied);
+  return { outcome: 'resolved', status, sharesAllotted: match.sharesAllotted };
+}
+
+async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResult> {
   try {
-    const res = await fetch(KFINTECH_QUERY_URL, {
-      headers: {
-        ...BROWSER_HEADERS,
-        reqparam: row.pan,
-        client_id: row.companyId,
-      },
-    });
+    const result =
+      row.provider === 'KFINTECH'
+        ? await checkOneKfintech(row)
+        : row.provider === 'BIGSHARE'
+          ? await checkOneBigshare(row)
+          : await checkOneMufg(row);
 
-    if (res.status === 404) {
+    if (result.outcome === 'not-yet') {
       await touchCheckedAt(client, [row.id]);
       return { row, outcome: 'not-yet' };
     }
-    if (res.status === 429)
-      throw new Error('KFintech is rate-limiting allotment checks');
-    if (!res.ok)
-      throw new Error(`KFintech allotment check responded ${res.status}`);
-
-    const body = await res.json().catch(() => null);
-    const matches = parseKfintechAllotmentBody(body);
-    if (!matches) {
-      await touchCheckedAt(client, [row.id]);
-      return { row, outcome: 'not-yet' };
-    }
-
-    const match = pickMatch(matches, row.application_no);
-    const status: AllotmentOutcome = statusFor(match, row.shares_applied);
 
     const { error } = await client
       .from('ipo_applications')
       .update({
-        status,
-        shares_allotted: match.sharesAllotted,
+        status: result.status,
+        shares_allotted: result.sharesAllotted,
         allotment_checked_at: new Date().toISOString(),
       })
       .eq('id', row.id);
@@ -194,8 +325,8 @@ async function checkOne(
     return {
       row,
       outcome: 'resolved',
-      status,
-      shares_allotted: match.sharesAllotted,
+      status: result.status,
+      shares_allotted: result.sharesAllotted,
     };
   } catch (e) {
     // The attempt happened even though it blew up, so stamp it — but never let
@@ -229,7 +360,7 @@ async function loadCandidatesByIds(
   const { data, error } = await client
     .from('ipo_applications')
     .select(
-      'id, user_id, shares_applied, application_no, ipos(company_name, kfintech_company_id, allotment_date), demat_accounts(pan)',
+      'id, user_id, shares_applied, application_no, ipos(company_name, kfintech_company_id, bigshare_company_id, mufg_company_id, allotment_date), demat_accounts(pan)',
     )
     .in('id', ids);
   if (error) throw error;
@@ -369,9 +500,9 @@ async function handleOnDemand(
   const rejected: string[] = [];
 
   for (const row of candidates) {
-    const companyId = row.ipos?.kfintech_company_id;
+    const resolved = resolveProvider(row.ipos);
     const pan = row.demat_accounts?.pan;
-    if (!companyId) {
+    if (!resolved) {
       rejected.push(row.id);
       results.push({
         id: row.id,
@@ -396,7 +527,8 @@ async function handleOnDemand(
       companyName: row.ipos?.company_name ?? 'your IPO',
       shares_applied: row.shares_applied,
       application_no: row.application_no,
-      companyId,
+      provider: resolved.provider,
+      companyId: resolved.companyId,
       pan,
     });
   }
@@ -465,7 +597,8 @@ Deno.serve(async (req) => {
   }
 
   await client.from('sync_log').insert({
-    provider: 'KFINTECH_ALLOTMENT_CHECK',
+    // Covers both registrars now — see checkOne's dispatch by row.provider.
+    provider: 'ALLOTMENT_CHECK',
     ok,
     rows_upserted: resolved,
     message:

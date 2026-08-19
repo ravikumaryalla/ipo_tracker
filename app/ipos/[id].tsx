@@ -82,7 +82,12 @@ export default function IpoDetail() {
 
   const check = useMutation({
     mutationFn: (ids: string[]) =>
-      checkAllotmentsForIpo(id!, ids, ipo.data?.kfintech_company_id ?? null),
+      checkAllotmentsForIpo(id!, ids, {
+        kfintech_company_id: ipo.data?.kfintech_company_id ?? null,
+        bigshare_company_id: ipo.data?.bigshare_company_id ?? null,
+        mufg_company_id: ipo.data?.mufg_company_id ?? null,
+        registrar: ipo.data?.registrar ?? null,
+      }),
     onSuccess: async (outcome) => {
       // Unconditional — the unmatched path stamps allotment_checked_at too, so
       // gating on `matched` left "Last checked" a tap behind. Same fix as the

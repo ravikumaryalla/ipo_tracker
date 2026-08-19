@@ -133,12 +133,23 @@ export default function ApplicationsTab() {
       ipoId,
       ids,
       kfintechCompanyId,
+      bigshareCompanyId,
+      mufgCompanyId,
+      registrar,
     }: {
       ipoId: string;
       ids: string[];
       kfintechCompanyId: string | null;
+      bigshareCompanyId: string | null;
+      mufgCompanyId: string | null;
+      registrar: string | null;
     }) => {
-      const outcome = await checkAllotmentsForIpo(ipoId, ids, kfintechCompanyId);
+      const outcome = await checkAllotmentsForIpo(ipoId, ids, {
+        kfintech_company_id: kfintechCompanyId,
+        bigshare_company_id: bigshareCompanyId,
+        mufg_company_id: mufgCompanyId,
+        registrar,
+      });
       return { ipoId, outcome };
     },
     onSuccess: async ({ ipoId, outcome }) => {
@@ -320,6 +331,9 @@ export default function ApplicationsTab() {
                             ipoId: first.ipo_id,
                             ids: eligible.map((r) => r.id),
                             kfintechCompanyId: first.kfintech_company_id,
+                            bigshareCompanyId: first.bigshare_company_id,
+                            mufgCompanyId: first.mufg_company_id,
+                            registrar: first.registrar,
                           });
                         }}
                         loading={checking}

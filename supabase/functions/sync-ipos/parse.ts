@@ -751,3 +751,51 @@ export function resolveKfintechCompanyMatch(
 
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Bigshare allotment-status company list
+// ---------------------------------------------------------------------------
+
+/** One entry from Bigshare's "Select Company" dropdown. */
+export type BigshareCompany = { id: string; name: string };
+
+/**
+ * Match one Bigshare dropdown entry to an `ipos` row.
+ *
+ * Same refusal rule as resolveKfintechCompanyMatch: Bigshare's dropdown
+ * carries no open date, so name is the only signal, and an ambiguous match
+ * is left alone rather than guessed at.
+ */
+export function resolveBigshareCompanyMatch(
+  company: BigshareCompany,
+  indexes: IpoIndexes,
+): string | null {
+  const name = normalizeName(company.name);
+  if (!name) return null;
+
+  const candidates = indexes.byName.get(name);
+  if (candidates && candidates.length === 1) return candidates[0].id;
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// MUFG Intime allotment-status company list
+// ---------------------------------------------------------------------------
+
+/** One entry from MUFG's company list (IPO.aspx/GetDetails). */
+export type MufgCompany = { id: string; name: string };
+
+/** Same refusal rule as resolveKfintechCompanyMatch/resolveBigshareCompanyMatch. */
+export function resolveMufgCompanyMatch(
+  company: MufgCompany,
+  indexes: IpoIndexes,
+): string | null {
+  const name = normalizeName(company.name);
+  if (!name) return null;
+
+  const candidates = indexes.byName.get(name);
+  if (candidates && candidates.length === 1) return candidates[0].id;
+
+  return null;
+}

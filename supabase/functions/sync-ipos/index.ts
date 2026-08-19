@@ -37,6 +37,8 @@
  */
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 
+import { parseBigshareCompanies } from './bigshare.ts';
+import { parseMufgCompanies } from './mufg.ts';
 import {
   ipogyaniGmpRow,
   type IpogyaniIpo,
@@ -61,8 +63,10 @@ import {
   parseIpowatchListingTable,
   parseKfintechCompanies,
   parsePriceBand,
+  resolveBigshareCompanyMatch,
   resolveIpoId,
   resolveKfintechCompanyMatch,
+  resolveMufgCompanyMatch,
   slugFromPath,
   statusFor,
   toNumber,
@@ -613,8 +617,9 @@ async function applyRegistrars(
 // Public data only — no PAN involved. This just resolves which `ipos` rows
 // are KFintech-registered issues and records the internal `clientId` their
 // allotment-status API needs, so the app can query allotment status on-device
-// without rediscovering that id per check. See lib/registrars/kfintech.ts for
-// the PAN-bearing query itself, which never runs here.
+// without rediscovering that id per check. See
+// supabase/functions/check-allotments/index.ts for the PAN-bearing query
+// itself, which never runs here.
 // ---------------------------------------------------------------------------
 
 const KFINTECH_BASE = 'https://ipostatus.kfintech.com';
@@ -679,6 +684,97 @@ async function syncKfintechCompanies(client: SupabaseClient): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// Bigshare allotment-status company list
+//
+// Public data only, same as the KFintech match above — this just resolves
+// which `ipos` rows are Bigshare-registered issues and records the internal
+// company id their allotment-status endpoint needs. Unlike KFintech's
+// directory-style dropdown, Bigshare's `ddlCompany` only ever lists issues
+// *currently* open to a query — everything else is present in the markup but
+// HTML-commented out (see parseBigshareCompanies) — so this has to run every
+// tick rather than once ever, to catch newly-opened issues.
+//
+// Also unlike KFintech, this does not write registrar/registrar_url: the
+// ipogyani sync already writes 'Bigshare' there correctly (see
+// ipogyani.ts's REGISTRARS map), and writing it again here would just be a
+// redundant second writer of the same fields.
+// ---------------------------------------------------------------------------
+
+const BIGSHARE_BASE = 'https://ipo.bigshareonline.com';
+
+async function fetchBigshareCompanies() {
+  const res = await fetch(`${BIGSHARE_BASE}/ipo_status.html`, { headers: BROWSER_HEADERS });
+  if (!res.ok) throw new Error(`Bigshare status page responded ${res.status}`);
+  const html = await res.text();
+
+  const companies = parseBigshareCompanies(html);
+  if (companies.length === 0) throw new Error('Bigshare status page yielded no live company entries');
+  return companies;
+}
+
+async function syncBigshareCompanies(client: SupabaseClient): Promise<number> {
+  const companies = await fetchBigshareCompanies();
+  const indexes = await loadIpoIndexes(client, { includeManual: true });
+
+  let matched = 0;
+  for (const company of companies) {
+    const id = resolveBigshareCompanyMatch(company, indexes);
+    if (!id) continue;
+    const { error } = await client
+      .from('ipos')
+      .update({ bigshare_company_id: company.id })
+      .eq('id', id);
+    if (!error) matched += 1;
+  }
+
+  return matched;
+}
+
+// ---------------------------------------------------------------------------
+// MUFG Intime allotment-status company list
+//
+// Same shape as the Bigshare match above: public data only, runs every tick
+// rather than once ever (MUFG's GetDetails list only ever carries currently
+// open issues), and doesn't touch registrar/registrar_url since ipogyani
+// already writes 'MUFG Intime' there correctly.
+// ---------------------------------------------------------------------------
+
+const MUFG_BASE = 'https://in.mpms.mufg.com/Initial_Offer';
+
+async function fetchMufgCompanies() {
+  const res = await fetch(`${MUFG_BASE}/IPO.aspx/GetDetails`, {
+    method: 'POST',
+    headers: { ...BROWSER_HEADERS, 'Content-Type': 'application/json;charset:utf-8' },
+    body: '{}',
+  });
+  if (!res.ok) throw new Error(`MUFG GetDetails responded ${res.status}`);
+  const body = await res.json().catch(() => null);
+  const xml = typeof body?.d === 'string' ? body.d : '';
+
+  const companies = parseMufgCompanies(xml);
+  if (companies.length === 0) throw new Error('MUFG GetDetails yielded no company entries');
+  return companies;
+}
+
+async function syncMufgCompanies(client: SupabaseClient): Promise<number> {
+  const companies = await fetchMufgCompanies();
+  const indexes = await loadIpoIndexes(client, { includeManual: true });
+
+  let matched = 0;
+  for (const company of companies) {
+    const id = resolveMufgCompanyMatch(company, indexes);
+    if (!id) continue;
+    const { error } = await client
+      .from('ipos')
+      .update({ mufg_company_id: company.id })
+      .eq('id', id);
+    if (!error) matched += 1;
+  }
+
+  return matched;
+}
+
+// ---------------------------------------------------------------------------
 // entrypoint
 // ---------------------------------------------------------------------------
 
@@ -703,6 +799,44 @@ Deno.serve(async (req) => {
     const outcome: Outcome = { provider: 'KFINTECH_MATCH', ok: false, rows: 0 };
     try {
       outcome.rows = await syncKfintechCompanies(client);
+      outcome.ok = true;
+    } catch (e) {
+      outcome.message = e instanceof Error ? e.message : String(e);
+    }
+    await client.from('sync_log').insert({
+      provider: outcome.provider,
+      ok: outcome.ok,
+      rows_upserted: outcome.rows,
+      message: outcome.message ?? null,
+    });
+    return new Response(JSON.stringify({ ok: outcome.ok, outcomes: [outcome] }, null, 2), {
+      status: outcome.ok ? 200 : 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (body?.onlyBigshare === true) {
+    const outcome: Outcome = { provider: 'BIGSHARE_MATCH', ok: false, rows: 0 };
+    try {
+      outcome.rows = await syncBigshareCompanies(client);
+      outcome.ok = true;
+    } catch (e) {
+      outcome.message = e instanceof Error ? e.message : String(e);
+    }
+    await client.from('sync_log').insert({
+      provider: outcome.provider,
+      ok: outcome.ok,
+      rows_upserted: outcome.rows,
+      message: outcome.message ?? null,
+    });
+    return new Response(JSON.stringify({ ok: outcome.ok, outcomes: [outcome] }, null, 2), {
+      status: outcome.ok ? 200 : 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (body?.onlyMufg === true) {
+    const outcome: Outcome = { provider: 'MUFG_MATCH', ok: false, rows: 0 };
+    try {
+      outcome.rows = await syncMufgCompanies(client);
       outcome.ok = true;
     } catch (e) {
       outcome.message = e instanceof Error ? e.message : String(e);
@@ -848,6 +982,39 @@ Deno.serve(async (req) => {
     ok: kfintech.ok,
     rows_upserted: kfintech.rows,
     message: kfintech.message ?? null,
+  });
+
+  // Unlike KFintech's match, this runs every tick rather than once ever —
+  // see the comment above syncBigshareCompanies for why.
+  const bigshare: Outcome = { provider: 'BIGSHARE_MATCH', ok: false, rows: 0 };
+  try {
+    bigshare.rows = await syncBigshareCompanies(client);
+    bigshare.ok = true;
+  } catch (e) {
+    bigshare.message = e instanceof Error ? e.message : String(e);
+  }
+  outcomes.push(bigshare);
+  await client.from('sync_log').insert({
+    provider: bigshare.provider,
+    ok: bigshare.ok,
+    rows_upserted: bigshare.rows,
+    message: bigshare.message ?? null,
+  });
+
+  // Same reasoning as Bigshare's — runs every tick, not once ever.
+  const mufg: Outcome = { provider: 'MUFG_MATCH', ok: false, rows: 0 };
+  try {
+    mufg.rows = await syncMufgCompanies(client);
+    mufg.ok = true;
+  } catch (e) {
+    mufg.message = e instanceof Error ? e.message : String(e);
+  }
+  outcomes.push(mufg);
+  await client.from('sync_log').insert({
+    provider: mufg.provider,
+    ok: mufg.ok,
+    rows_upserted: mufg.rows,
+    message: mufg.message ?? null,
   });
 
   // Roll IPOs forward through their lifecycle regardless of whether the fetch
