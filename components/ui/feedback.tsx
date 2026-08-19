@@ -37,24 +37,58 @@ export function SectionHeader({ title, action }: { title: string; action?: React
   );
 }
 
+/**
+ * Status pill. Doubles as the design system's Chip.
+ *
+ * `filled` is the design system's default and is what status chips in the
+ * mockups use; `tonal` is the pale-background treatment the app used
+ * throughout before, and stays the default so existing call sites are
+ * unchanged. Labels are only uppercased in the tonal treatment — a filled chip
+ * carries enough weight without it.
+ */
 export function Badge({
   label,
   tone = 'muted',
+  variant = 'tonal',
+  size = 'medium',
 }: {
   label: string;
-  tone?: 'muted' | 'success' | 'warning' | 'danger' | 'accent';
+  tone?: 'muted' | 'success' | 'warning' | 'danger' | 'accent' | 'info' | 'navy';
+  variant?: 'tonal' | 'filled' | 'outlined';
+  size?: 'small' | 'medium';
 }) {
   const map = {
-    muted: [colors.surfaceRaised, colors.textMuted],
-    success: [colors.successSoft, colors.success],
-    warning: [colors.warningSoft, colors.warning],
-    danger: [colors.dangerSoft, colors.danger],
-    accent: [colors.accentSoft, colors.accentBright],
+    muted: [colors.surfaceAlt, colors.textMuted, colors.border],
+    success: [colors.successSoft, colors.success, colors.success],
+    warning: [colors.warningSoft, colors.warning, colors.warning],
+    danger: [colors.dangerSoft, colors.danger, colors.danger],
+    accent: [colors.accentSoft, colors.accent, colors.accent],
+    info: [colors.infoSoft, colors.info, colors.info],
+    navy: [colors.accentSoft, colors.navy, colors.navy],
   } as const;
-  const [bg, fg] = map[tone];
+  const [soft, strong, line] = map[tone];
+
+  const box =
+    variant === 'filled'
+      ? { backgroundColor: strong, borderColor: strong }
+      : variant === 'outlined'
+        ? { backgroundColor: 'transparent', borderColor: line }
+        : { backgroundColor: soft, borderColor: 'transparent' };
+  const fg =
+    variant === 'filled'
+      ? tone === 'muted'
+        ? colors.text
+        : colors.onAccent
+      : strong;
+
   return (
-    <View style={[styles.badge, { backgroundColor: bg, borderColor: fg + '33' }]}>
-      <Text style={[styles.badgeText, { color: fg }]}>{label.toUpperCase()}</Text>
+    <View style={[styles.badge, size === 'small' && styles.badgeSmall, box]}>
+      <Text
+        style={[styles.badgeText, size === 'small' && styles.badgeTextSmall, { color: fg }]}
+        numberOfLines={1}
+      >
+        {variant === 'tonal' ? label.toUpperCase() : label}
+      </Text>
     </View>
   );
 }
@@ -69,22 +103,32 @@ export function ErrorText({ children }: { children?: string | null }) {
   );
 }
 
+/** Inline callout. Doubles as the design system's Alert. */
 export function Banner({
   tone = 'warning',
+  title,
   children,
 }: {
-  tone?: 'warning' | 'danger' | 'info';
+  tone?: 'warning' | 'danger' | 'info' | 'success';
+  /** Optional bold first line, for alerts that need a headline. */
+  title?: string;
   children: React.ReactNode;
 }) {
-  const bg =
-    tone === 'danger' ? colors.dangerSoft : tone === 'info' ? colors.accentSoft : colors.warningSoft;
-  const fg =
-    tone === 'danger' ? colors.danger : tone === 'info' ? colors.accentBright : colors.warning;
-  const icon: IconName = tone === 'danger' ? 'warning' : tone === 'info' ? 'info' : 'warning';
+  const map = {
+    warning: [colors.warningSoft, colors.warning, 'warning'],
+    danger: [colors.dangerSoft, colors.danger, 'warning'],
+    info: [colors.infoSoft, colors.info, 'info'],
+    success: [colors.successSoft, colors.success, 'check'],
+  } as const;
+  const [bg, fg, icon] = map[tone];
+
   return (
-    <View style={[styles.banner, { backgroundColor: bg, borderColor: fg + '2E' }]}>
-      <Icon name={icon} size={18} color={fg} />
-      <Text style={[styles.bannerText, { color: fg }]}>{children}</Text>
+    <View style={[styles.banner, { backgroundColor: bg }]}>
+      <Icon name={icon as IconName} size={18} color={fg} />
+      <View style={styles.bannerBody}>
+        {title ? <Text style={[styles.bannerTitle, { color: fg }]}>{title}</Text> : null}
+        <Text style={[styles.bannerText, { color: fg }]}>{children}</Text>
+      </View>
     </View>
   );
 }
@@ -197,7 +241,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.xl,
     marginBottom: spacing.md,
   },
-  sectionTitle: { ...type.label, color: colors.textFaint },
+  sectionTitle: { ...type.label, color: colors.textMuted },
   badge: {
     borderRadius: radius.pill,
     borderWidth: 1,
@@ -205,15 +249,15 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     alignSelf: 'flex-start',
   },
+  badgeSmall: { paddingHorizontal: spacing.sm + 2, paddingVertical: 3 },
   badgeText: { ...type.label, fontSize: 10, letterSpacing: 0.8 },
+  badgeTextSmall: { fontSize: 9.5, letterSpacing: 0.4 },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: spacing.md,
     backgroundColor: colors.dangerSoft,
-    borderWidth: 1,
-    borderColor: colors.danger + '33',
-    borderRadius: radius.lg,
+    borderRadius: radius.md,
     padding: spacing.lg,
     marginBottom: spacing.md,
   },
@@ -222,12 +266,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: spacing.md,
-    borderRadius: radius.lg,
-    borderWidth: 1,
+    borderRadius: radius.md,
     padding: spacing.lg,
     marginBottom: spacing.md,
   },
-  bannerText: { ...type.caption, flex: 1, fontSize: 13 },
+  bannerBody: { flex: 1, gap: 2 },
+  bannerTitle: { ...type.bodyStrong, fontSize: 13 },
+  bannerText: { ...type.caption, fontSize: 13 },
   resultList: {
     backgroundColor: colors.surfaceAlt,
     borderRadius: radius.lg,

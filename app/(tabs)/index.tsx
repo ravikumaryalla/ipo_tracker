@@ -194,5 +194,5 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   meta: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs + 1 },
-  metaText: { ...type.caption, color: colors.textFaint },
+  metaText: { ...type.caption, color: colors.textMuted },
 });

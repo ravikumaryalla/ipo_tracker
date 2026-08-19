@@ -328,8 +328,8 @@ const styles = StyleSheet.create({
   chipOff: { opacity: 0.45 },
   chipText: { ...type.label, color: colors.textMuted, fontSize: 13, letterSpacing: 0.2 },
   chipTextOn: { color: colors.accent },
-  chipSub: { ...type.caption, color: colors.textFaint, fontSize: 10, marginTop: 2 },
-  detail: { ...type.caption, color: colors.textFaint, marginTop: spacing.md },
+  chipSub: { ...type.caption, color: colors.textMuted, fontSize: 10, marginTop: 2 },
+  detail: { ...type.caption, color: colors.textMuted, marginTop: spacing.md },
   total: {
     flexDirection: 'row',
     justifyContent: 'space-between',

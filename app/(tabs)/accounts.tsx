@@ -104,7 +104,7 @@ const styles = StyleSheet.create({
   tags: { alignItems: 'flex-end', gap: spacing.xs },
   footnote: {
     ...type.caption,
-    color: colors.textFaint,
+    color: colors.textMuted,
     textAlign: 'center',
     marginTop: spacing.lg,
     paddingHorizontal: spacing.xl,

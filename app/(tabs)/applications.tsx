@@ -400,6 +400,6 @@ const styles = StyleSheet.create({
   },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs + 1, flex: 1 },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
-  meta: { ...type.caption, color: colors.textFaint },
+  meta: { ...type.caption, color: colors.textMuted },
   pnl: { ...type.bodyStrong, fontSize: 15 },
 });

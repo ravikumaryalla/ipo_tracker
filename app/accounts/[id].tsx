@@ -143,5 +143,5 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: spacing.lg, gap: spacing.md },
   title: { ...type.title, color: colors.text },
   subtitle: { ...type.body, color: colors.textMuted, marginTop: 2 },
-  meta: { ...type.caption, color: colors.textFaint, marginTop: spacing.md },
+  meta: { ...type.caption, color: colors.textMuted, marginTop: spacing.md },
 });

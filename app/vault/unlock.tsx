@@ -154,7 +154,7 @@ export default function VaultUnlock() {
       )}
 
       <View style={{ marginTop: spacing.xl, alignItems: 'center' }}>
-        <Text style={{ ...type.caption, color: colors.textFaint, marginBottom: spacing.sm }}>
+        <Text style={{ ...type.caption, color: colors.textMuted, marginBottom: spacing.sm }}>
           Signed in on the wrong account?
         </Text>
         <Button title="Sign out" variant="ghost" onPress={() => signOut()} />

@@ -130,7 +130,7 @@ export default function VaultSetup() {
           loading={busy}
         />
         {busy && (
-          <Text style={{ ...type.caption, color: colors.textFaint, textAlign: 'center' }}>
+          <Text style={{ ...type.caption, color: colors.textMuted, textAlign: 'center' }}>
             Deriving your key. This takes a few seconds by design — it is what makes guessing your
             PIN expensive.
           </Text>

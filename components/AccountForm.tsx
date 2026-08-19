@@ -158,7 +158,7 @@ export function AccountForm({
 
 const styles = StyleSheet.create({
   section: { ...type.heading, color: colors.text, marginBottom: spacing.xs },
-  sectionHint: { ...type.caption, color: colors.textFaint, marginBottom: spacing.lg },
+  sectionHint: { ...type.caption, color: colors.textMuted, marginBottom: spacing.lg },
   label: { ...type.label, color: colors.textMuted, marginBottom: spacing.sm },
   chip: {
     backgroundColor: colors.surfaceAlt,

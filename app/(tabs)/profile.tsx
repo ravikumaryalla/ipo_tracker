@@ -287,7 +287,7 @@ const styles = StyleSheet.create({
   value: { ...type.body, color: colors.textMuted, fontSize: 14 },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.lg },
   rowLabel: { ...type.bodyStrong, color: colors.text, fontSize: 14 },
-  rowHint: { ...type.caption, color: colors.textFaint, marginTop: spacing.xs },
+  rowHint: { ...type.caption, color: colors.textMuted, marginTop: spacing.xs },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md },
   chip: {
     backgroundColor: colors.surfaceAlt,

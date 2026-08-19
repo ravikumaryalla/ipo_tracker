@@ -123,7 +123,7 @@ const styles = StyleSheet.create({
   valueRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   value: { ...type.body, color: colors.text, flex: 1 },
   mono: { fontVariant: ['tabular-nums'], letterSpacing: 1.5 },
-  notSet: { ...type.body, color: colors.textFaint, fontStyle: 'italic' },
+  notSet: { ...type.body, color: colors.textMuted, fontStyle: 'italic' },
   action: {
     width: 34,
     height: 34,
