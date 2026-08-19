@@ -105,6 +105,23 @@ export function pickGmpProvider(rows: IpoGmp[]): IpoGmp[] {
 }
 
 /**
+ * Latest GMP reading for every IPO that has one, in a single query.
+ *
+ * Backed by v_ipo_latest_gmp, which already picks the preferred provider per
+ * IPO in Postgres (same preference order as pickGmpProvider) — so the list
+ * screen can show a GMP figure on every card without a query per row.
+ */
+export async function latestGmpByIpo(): Promise<Map<string, IpoGmp>> {
+  const { data, error } = await supabase.from('v_ipo_latest_gmp').select('*');
+  if (error) throw dbError(error);
+  return new Map(
+    (data ?? [])
+      .filter((row): row is IpoGmp & { ipo_id: string } => row.ipo_id !== null)
+      .map((row) => [row.ipo_id, row]),
+  );
+}
+
+/**
  * Grey market premium readings for one IPO, oldest first so a chart can plot
  * them directly.
  *

@@ -483,3 +483,20 @@ alter table public.ipo_gmp enable row level security;
 -- only ever reference synced IPOs, which every user can already read.
 create policy "gmp: read all" on public.ipo_gmp
   for select to authenticated using (true);
+
+-- ---------------------------------------------------------------------------
+-- v_ipo_latest_gmp: one row per IPO's best GMP reading, so the IPO list can
+-- show a grey-market premium figure with a single extra query instead of one
+-- per row. Provider preference mirrors GMP_PROVIDERS in lib/db/ipos.ts.
+--
+-- security_invoker = on, same reasoning as v_application_pnl above.
+-- ---------------------------------------------------------------------------
+create view public.v_ipo_latest_gmp
+with (security_invoker = on)
+as
+select distinct on (ipo_id) *
+from public.ipo_gmp
+where ipo_id is not null
+order by ipo_id,
+  case provider when 'IPOGYANI' then 0 when 'IPOWATCH' then 1 else 2 end,
+  observed_at desc;

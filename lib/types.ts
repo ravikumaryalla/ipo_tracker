@@ -228,6 +228,7 @@ export type Database = {
     };
     Views: {
       v_application_pnl: { Row: ApplicationPnl; Relationships: [] };
+      v_ipo_latest_gmp: { Row: IpoGmp; Relationships: [] };
     };
     Functions: Record<string, never>;
     Enums: {

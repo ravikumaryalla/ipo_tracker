@@ -13,10 +13,11 @@
  * intended: this one is a glance, that one carries the sentence that explains
  * the number.
  *
- * Each row carries the metric that matters for where the IPO is in its cycle.
- * Grey-market premium is deliberately not among them: it lives in `ipo_gmp` and
- * is fetched per issue, so showing it here would mean one query per row. The
- * detail screen shows it, where it costs a single fetch.
+ * Each row carries the metric that matters for where the IPO is in its cycle,
+ * plus grey-market premium where a reading exists. GMP lives in `ipo_gmp`,
+ * keyed per issue — showing it here without a query per row relies on
+ * v_ipo_latest_gmp, a view that already picks the best reading per IPO in
+ * Postgres, fetched once for the whole list via latestGmpByIpo().
  */
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
@@ -41,8 +42,14 @@ import {
 } from '../../components/ui';
 import { colors, formatInr, motion, spacing, type } from '../../constants/theme';
 import { listApplications, summarise } from '../../lib/db/applications';
-import { bucketOf, latestSyncStatus, listIpos, type IpoBucket } from '../../lib/db/ipos';
-import type { Ipo } from '../../lib/types';
+import {
+  bucketOf,
+  latestGmpByIpo,
+  latestSyncStatus,
+  listIpos,
+  type IpoBucket,
+} from '../../lib/db/ipos';
+import type { Ipo, IpoGmp } from '../../lib/types';
 
 const TABS: { key: IpoBucket; label: string }[] = [
   { key: 'open', label: 'Open now' },
@@ -107,6 +114,22 @@ function trailingMetric(
   };
 }
 
+/**
+ * GMP as a card figure, or null to skip it. Skipped once listed — "Listing
+ * gain" in trailingMetric is the post-listing analogue of the same signal.
+ */
+function gmpFigure(
+  reading: IpoGmp | undefined,
+  bucket: IpoBucket,
+): { label: string; value: string; tone: 'good' | 'bad' | 'plain' } | null {
+  if (bucket === 'listed' || reading?.gmp == null) return null;
+  return {
+    label: 'GMP',
+    value: `${formatInr(reading.gmp)}${reading.gmp_percent != null ? ` (${reading.gmp_percent}%)` : ''}`,
+    tone: reading.gmp > 0 ? 'good' : reading.gmp < 0 ? 'bad' : 'plain',
+  };
+}
+
 /** The one-line date note under each card. */
 function dateNote(ipo: Ipo, bucket: IpoBucket): string {
   const today = new Date().toISOString().slice(0, 10);
@@ -134,6 +157,7 @@ export default function Home() {
   const ipos = useQuery({ queryKey: ['ipos'], queryFn: listIpos });
   const sync = useQuery({ queryKey: ['syncStatus'], queryFn: latestSyncStatus });
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
+  const gmp = useQuery({ queryKey: ['gmp-latest'], queryFn: latestGmpByIpo });
 
   const summary = useMemo(() => summarise(applications.data ?? []), [applications.data]);
 
@@ -250,6 +274,13 @@ export default function Home() {
               : metric.tone === 'bad'
                 ? colors.danger
                 : colors.text;
+          const gmpMetric = gmpFigure(gmp.data?.get(ipo.id), tab);
+          const gmpColor =
+            gmpMetric?.tone === 'good'
+              ? colors.success
+              : gmpMetric?.tone === 'bad'
+                ? colors.danger
+                : colors.text;
 
           return (
             <Animated.View
@@ -286,14 +317,38 @@ export default function Home() {
                       </Text>
                     </View>
                     <View style={styles.figure}>
-                      <Text style={[styles.figureLabel, styles.alignRight]}>{metric.label}</Text>
                       <Text
-                        style={[styles.figureValue, styles.alignRight, { color: metricColor }]}
+                        style={[
+                          styles.figureLabel,
+                          gmpMetric ? undefined : styles.alignRight,
+                        ]}
+                      >
+                        {metric.label}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.figureValue,
+                          gmpMetric ? undefined : styles.alignRight,
+                          { color: metricColor },
+                        ]}
                         numberOfLines={1}
                       >
                         {metric.value}
                       </Text>
                     </View>
+                    {gmpMetric && (
+                      <View style={styles.figure}>
+                        <Text style={[styles.figureLabel, styles.alignRight]}>
+                          {gmpMetric.label}
+                        </Text>
+                        <Text
+                          style={[styles.figureValue, styles.alignRight, { color: gmpColor }]}
+                          numberOfLines={1}
+                        >
+                          {gmpMetric.value}
+                        </Text>
+                      </View>
+                    )}
                   </View>
 
                   <Text style={styles.dateNote}>{dateNote(ipo, tab)}</Text>
