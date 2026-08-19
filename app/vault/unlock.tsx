@@ -2,19 +2,52 @@
  * The lock screen. Reached on cold start, after auto-lock, and after a manual
  * lock. Offers biometrics when they are set up, PIN always, and the recovery
  * code as the last resort.
+ *
+ * This is the screen the app shows most often, so it leads with who you are
+ * rather than with product chrome: an avatar, a greeting, and an escape hatch
+ * for the case where the answer is "that isn't me".
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { Banner, BrandMark, Button, ErrorText, Field, Screen } from '../../components/ui';
+import {
+  Avatar,
+  Banner,
+  Button,
+  ErrorText,
+  Field,
+  PinInput,
+  Screen,
+} from '../../components/ui';
 import { colors, spacing, type } from '../../constants/theme';
 import { useAuth } from '../../lib/auth';
 import { getBiometricSupport, type BiometricSupport } from '../../lib/crypto/secureStore';
 import { useVault } from '../../lib/vault';
 
+/**
+ * The name to greet by.
+ *
+ * `display_name` is set on the auth user at sign-up (lib/auth.tsx), so it is
+ * already in memory — a locked screen must not need a query to render. Sign-up
+ * falls back to the email when the name field is left blank, so the stored
+ * value can itself be an address; take the local part in that case rather than
+ * greeting someone by their full email.
+ */
+function greetingName(displayName: unknown, email: string | undefined): string {
+  const candidate =
+    (typeof displayName === 'string' && displayName.trim()) || email?.trim() || '';
+  if (!candidate) return 'there';
+  const local = candidate.includes('@') ? candidate.split('@')[0] : candidate;
+  if (!local) return 'there';
+  // An email local part arrives lowercase, and "Hey, ravikumar" reads like a
+  // username rather than a greeting. Only the first letter is touched — the
+  // rest is left exactly as typed, so "McDonald" survives.
+  return local[0].toUpperCase() + local.slice(1);
+}
+
 export default function VaultUnlock() {
   const { unlock, unlockWithBiometrics, unlockWithRecoveryCode, biometricsEnabled } = useVault();
-  const { signOut } = useAuth();
+  const { session, signOut } = useAuth();
 
   const [passphrase, setPassphrase] = useState('');
   const [recoveryCode, setRecoveryCode] = useState('');
@@ -30,6 +63,9 @@ export default function VaultUnlock() {
     busyRef.current = value;
     setBusyState(value);
   };
+
+  const email = session?.user.email;
+  const name = greetingName(session?.user.user_metadata?.display_name, email);
 
   useEffect(() => {
     getBiometricSupport().then(setSupport).catch(() => undefined);
@@ -66,6 +102,10 @@ export default function VaultUnlock() {
       await unlock(passphrase);
       setPassphrase('');
     } catch (e) {
+      // Clear the box on a bad PIN: leaving the six filled slots there reads as
+      // "that went through", and the next digit typed would append to a full
+      // field and do nothing.
+      setPassphrase('');
       setError(e instanceof Error ? e.message : 'Could not unlock.');
     } finally {
       setBusy(false);
@@ -87,78 +127,97 @@ export default function VaultUnlock() {
     }
   }
 
+  // Confirmed, because this sits directly under the greeting where a mis-tap is
+  // easy and signing out clears the cached vault key and this device's push
+  // token.
+  function confirmSignOut() {
+    Alert.alert(
+      'Sign out?',
+      'Your cached vault key will be erased from this device. You will need your PIN or recovery code to unlock again after signing back in.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Sign out', style: 'destructive', onPress: () => signOut() },
+      ],
+    );
+  }
+
+  // Only paddingHorizontal is passed to Screen: it applies the caller's style
+  // after its own paddingTop, so overriding that would put this content under
+  // the status bar on a notched device. The breathing room goes on the avatar.
   return (
-    <Screen style={{ justifyContent: 'center', minHeight: '100%', paddingHorizontal: spacing.xl }}>
-      <BrandMark
-        icon="lock"
-        title="Vault locked"
-        subtitle="Your passwords stay encrypted until you unlock them."
-      />
+    <Screen style={{ paddingHorizontal: spacing.xl }}>
+      <Avatar name={name} size={64} style={styles.avatar} />
 
-      <ErrorText>{error}</ErrorText>
+      <Text style={styles.greeting}>Hey, {name}</Text>
+      {email ? (
+        <Pressable accessibilityRole="button" onPress={confirmSignOut} hitSlop={8}>
+          <Text style={styles.notYou}>Not {email}?</Text>
+        </Pressable>
+      ) : null}
 
-      {showRecovery ? (
-        <>
-          <Banner tone="warning">
-            Use this only if you have forgotten your PIN. After unlocking, set a new PIN in
-            Settings.
-          </Banner>
-          <Field
-            label="Recovery code"
-            value={recoveryCode}
-            onChangeText={setRecoveryCode}
-            autoCapitalize="characters"
-            autoCorrect={false}
-            placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
-          />
-          <Button title="Unlock with recovery code" onPress={onRecover} loading={busy} />
-          <Button title="Back" variant="ghost" onPress={() => setShowRecovery(false)} />
-        </>
-      ) : (
-        <>
-          <Field
-            label="PIN"
-            value={passphrase}
-            onChangeText={(v) => setPassphrase(v.replace(/\D/g, '').slice(0, 6))}
-            secureTextEntry
-            keyboardType="number-pad"
-            maxLength={6}
-            autoFocus={!biometricsEnabled}
-            onSubmitEditing={onUnlock}
-            returnKeyType="go"
-          />
+      <View style={styles.body}>
+        <ErrorText>{error}</ErrorText>
 
-          <Button
-            title={busy ? 'Unlocking…' : 'Unlock'}
-            icon="unlock"
-            onPress={onUnlock}
-            loading={busy}
-          />
-
-          {biometricsEnabled && support?.enrolled && (
-            <Button
-              title={`Use ${support.label.toLowerCase()}`}
-              icon={support.label === 'Device passcode' ? 'lock' : 'fingerprint'}
-              variant="secondary"
-              onPress={tryBiometrics}
-              disabled={busy}
+        {showRecovery ? (
+          <>
+            <Banner tone="warning">
+              Use this only if you have forgotten your PIN. After unlocking, set a new PIN in
+              Settings.
+            </Banner>
+            <Field
+              label="Recovery code"
+              value={recoveryCode}
+              onChangeText={setRecoveryCode}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
             />
-          )}
+            <Button title="Unlock with recovery code" onPress={onRecover} loading={busy} />
+            <Button title="Back" variant="ghost" onPress={() => setShowRecovery(false)} />
+          </>
+        ) : (
+          <>
+            <Text style={styles.prompt}>Enter your 6-digit PIN.</Text>
 
-          <Button
-            title="I forgot my PIN"
-            variant="ghost"
-            onPress={() => setShowRecovery(true)}
-          />
-        </>
-      )}
+            <PinInput
+              value={passphrase}
+              onChangeText={setPassphrase}
+              autoFocus={!biometricsEnabled}
+              onSubmitEditing={onUnlock}
+            />
 
-      <View style={{ marginTop: spacing.xl, alignItems: 'center' }}>
-        <Text style={{ ...type.caption, color: colors.textMuted, marginBottom: spacing.sm }}>
-          Signed in on the wrong account?
-        </Text>
-        <Button title="Sign out" variant="ghost" onPress={() => signOut()} />
+            <Button
+              title={busy ? 'Unlocking…' : 'Continue'}
+              onPress={onUnlock}
+              loading={busy}
+            />
+
+            {biometricsEnabled && support?.enrolled && (
+              <Button
+                title={`Use ${support.label.toLowerCase()}`}
+                icon={support.label === 'Device passcode' ? 'lock' : 'fingerprint'}
+                variant="secondary"
+                onPress={tryBiometrics}
+                disabled={busy}
+              />
+            )}
+
+            <Button
+              title="I forgot my PIN"
+              variant="ghost"
+              onPress={() => setShowRecovery(true)}
+            />
+          </>
+        )}
       </View>
     </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  avatar: { marginTop: spacing.xl },
+  greeting: { ...type.display, color: colors.text, marginTop: spacing.lg },
+  notYou: { ...type.body, color: colors.accent, marginTop: spacing.xs },
+  body: { marginTop: spacing.xl },
+  prompt: { ...type.body, color: colors.text, marginBottom: spacing.md },
+});

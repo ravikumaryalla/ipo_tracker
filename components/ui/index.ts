@@ -9,6 +9,7 @@ export { Screen } from './Screen';
 export { Card } from './Card';
 export { Button } from './Button';
 export { Field } from './Field';
+export { PinInput, sanitisePin } from './PinInput';
 export { Icon, type IconName } from './Icon';
 export { AnimatedNumber } from './AnimatedNumber';
 export { DonutGauge, Sparkline } from './charts';

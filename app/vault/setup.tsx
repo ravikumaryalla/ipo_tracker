@@ -15,7 +15,16 @@ import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
-import { Banner, BrandMark, Button, Card, ErrorText, Field, Icon, Screen } from '../../components/ui';
+import {
+  Banner,
+  BrandMark,
+  Button,
+  Card,
+  ErrorText,
+  Icon,
+  PinInput,
+  Screen,
+} from '../../components/ui';
 import { colors, fonts, radius, spacing, type } from '../../constants/theme';
 import { useVault } from '../../lib/vault';
 
@@ -104,23 +113,12 @@ export default function VaultSetup() {
 
         <ErrorText>{error}</ErrorText>
 
-        <Field
-          label="6-digit PIN"
-          value={passphrase}
-          onChangeText={(v) => setPassphrase(v.replace(/\D/g, '').slice(0, 6))}
-          secureTextEntry
-          keyboardType="number-pad"
-          maxLength={6}
-          placeholder="000000"
-        />
+        <PinInput label="6-digit PIN" value={passphrase} onChangeText={setPassphrase} />
 
-        <Field
+        <PinInput
           label="Confirm PIN"
           value={confirm}
-          onChangeText={(v) => setConfirm(v.replace(/\D/g, '').slice(0, 6))}
-          secureTextEntry
-          keyboardType="number-pad"
-          maxLength={6}
+          onChangeText={setConfirm}
           onSubmitEditing={onCreate}
         />
 
