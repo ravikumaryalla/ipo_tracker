@@ -7,13 +7,15 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import {
   AllotmentCheckResults,
   type AllotmentCheckResultTone,
+  AppHeader,
+  Avatar,
   Badge,
   Banner,
   Button,
   Card,
   EmptyState,
   ErrorText,
-  Heading,
+  HeaderAction,
   Icon,
   Loading,
   Screen,
@@ -42,8 +44,8 @@ const STATUS_ACCENT: Record<ApplicationStatus, string> = {
   APPLIED: colors.accent,
   ALLOTTED: colors.success,
   PARTIAL: colors.success,
-  NOT_ALLOTTED: colors.textFaint,
-  WITHDRAWN: colors.textFaint,
+  NOT_ALLOTTED: colors.textMuted,
+  WITHDRAWN: colors.textMuted,
   REFUNDED: colors.warning,
 };
 
@@ -160,9 +162,22 @@ export default function ApplicationsTab() {
   if (applications.isLoading) return <Loading label="Loading applications…" />;
 
   return (
-    <Screen inset>
-      <Heading sub="Every bid you have placed, and what came of it.">Applications</Heading>
-
+    <Screen
+      inset
+      header={
+        <AppHeader
+          title="Allotment Status"
+          right={
+            <HeaderAction
+              icon="add"
+              label="Record an application"
+              color={colors.accent}
+              onPress={() => router.push('/applications/new')}
+            />
+          }
+        />
+      }
+    >
       <ErrorText>
         {applications.error instanceof Error ? applications.error.message : null}
       </ErrorText>
@@ -175,18 +190,21 @@ export default function ApplicationsTab() {
         />
       )}
 
-      <Button
-        title="Record an application"
-        icon="add"
-        onPress={() => router.push('/applications/new')}
-      />
-
       {rows.length === 0 ? (
-        <EmptyState
-          icon="applications"
-          title="No applications yet"
-          body="Once you apply to an IPO, record it here to track allotment and listing gains."
-        />
+        <>
+          <EmptyState
+            icon="applications"
+            title="No applications yet"
+            body="Once you apply to an IPO, record it here to track allotment and listing gains."
+          />
+          {/* The header's + carries this action once the list has content; on
+              an empty screen there is nothing to infer it from. */}
+          <Button
+            title="Record an application"
+            icon="add"
+            onPress={() => router.push('/applications/new')}
+          />
+        </>
       ) : visible.length === 0 ? (
         <EmptyState
           icon="applications"
@@ -228,7 +246,8 @@ export default function ApplicationsTab() {
                 />
 
                 <View style={styles.header}>
-                  <View style={{ flex: 1 }}>
+                  <Avatar name={first.company_name} size={38} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={styles.company} numberOfLines={1}>
                       {first.company_name}
                     </Text>
@@ -368,8 +387,18 @@ export default function ApplicationsTab() {
 
 const styles = StyleSheet.create({
   card: { paddingLeft: spacing.lg + 4 },
-  rail: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 3 },
-  header: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
+  rail: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 3,
+    // Card stopped clipping its children — that would cut off the shadow that
+    // now defines its edge — so the rail rounds its own outer corners.
+    borderTopLeftRadius: radius.md,
+    borderBottomLeftRadius: radius.md,
+  },
+  header: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   company: { ...type.bodyStrong, color: colors.text, fontSize: 16 },
   sub: { ...type.caption, color: colors.textMuted, marginTop: 2 },
   pillRow: {

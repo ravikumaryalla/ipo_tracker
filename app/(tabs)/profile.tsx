@@ -1,17 +1,28 @@
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Platform, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
-import { Banner, Button, Card, ErrorText, Icon, Screen, type IconName } from '../../components/ui';
-import { colors, radius, spacing, type } from '../../constants/theme';
+import {
+  AppHeader,
+  Avatar,
+  Banner,
+  Button,
+  Card,
+  DonutGauge,
+  ErrorText,
+  Icon,
+  Screen,
+  type IconName,
+} from '../../components/ui';
+import { colors, formatInr, radius, spacing, type } from '../../constants/theme';
 import { useAuth } from '../../lib/auth';
 import {
   BIOMETRICS_WEB_MESSAGE,
   getBiometricSupport,
   type BiometricSupport,
 } from '../../lib/crypto/secureStore';
-import { listApplications } from '../../lib/db/applications';
+import { listApplications, summarise } from '../../lib/db/applications';
 import { listIpos } from '../../lib/db/ipos';
 import {
   cancelAllReminders,
@@ -51,6 +62,8 @@ export default function Settings() {
 
   const ipos = useQuery({ queryKey: ['ipos'], queryFn: listIpos });
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
+
+  const summary = useMemo(() => summarise(applications.data ?? []), [applications.data]);
 
   useEffect(() => {
     getBiometricSupport().then(setSupport).catch(() => undefined);
@@ -128,13 +141,87 @@ export default function Settings() {
   }
 
   return (
-    <Screen>
+    <Screen inset header={<AppHeader title="Profile" />}>
       <ErrorText>{error}</ErrorText>
       {notice && <Banner tone="info">{notice}</Banner>}
 
+      <View style={styles.identity}>
+        <Avatar name={session?.user.email ?? '?'} size={56} />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.identityName} numberOfLines={1}>
+            {session?.user.email ?? 'Signed out'}
+          </Text>
+          <Text style={styles.identityMeta}>
+            {summary.totalApplications} application(s) across {summary.byAccount.length} account(s)
+          </Text>
+        </View>
+      </View>
+
+      {/*
+        The allotment gauge and the per-account breakdown came from the old
+        dashboard when it was dissolved into Home and here. Home took the net
+        position; these two need room to be read rather than glanced at, which
+        is what this screen has.
+      */}
       <Card>
-        <SectionRow icon="accounts" title="Account" />
-        <Text style={styles.value}>{session?.user.email}</Text>
+        <SectionRow icon="pie" title="Portfolio" />
+
+        <View style={styles.gaugeRow}>
+          <DonutGauge value={summary.allotmentRate ?? 0} size={78} thickness={8}>
+            <Text style={styles.gaugeText}>
+              {summary.allotmentRate === null
+                ? '—'
+                : `${Math.round(summary.allotmentRate * 100)}%`}
+            </Text>
+          </DonutGauge>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.rowLabel}>Allotment rate</Text>
+            <Text style={styles.rowHint}>
+              {summary.allotmentRate === null
+                ? 'No results yet.'
+                : `${summary.allottedApplications} of ${summary.decidedApplications} decided application(s) were allotted.`}
+            </Text>
+          </View>
+        </View>
+
+        {summary.byAccount.length > 0 && (
+          <View style={styles.byAccount}>
+            {summary.byAccount.map((account, i) => (
+              <View
+                key={account.accountId}
+                style={[
+                  styles.accountRow,
+                  i === summary.byAccount.length - 1 && styles.accountRowLast,
+                ]}
+              >
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.accountName} numberOfLines={1}>
+                    {account.nickname}
+                  </Text>
+                  <Text style={styles.rowHint}>{account.applications} application(s)</Text>
+                </View>
+                {/* Fixed width so the rupee figures line up down the column —
+                    tabular-nums is iOS-only, so the container does the work. */}
+                <Text
+                  style={[
+                    styles.accountPnl,
+                    {
+                      color:
+                        account.pnl > 0
+                          ? colors.success
+                          : account.pnl < 0
+                            ? colors.danger
+                            : colors.textMuted,
+                    },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {formatInr(account.pnl)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
       </Card>
 
       <Card>
@@ -256,7 +343,7 @@ function SectionRow({
   title: string;
   tone?: 'normal' | 'danger';
 }) {
-  const color = tone === 'danger' ? colors.danger : colors.accentBright;
+  const color = tone === 'danger' ? colors.danger : colors.accent;
   return (
     <View style={styles.sectionRow}>
       <View style={[styles.sectionIcon, tone === 'danger' && styles.sectionIconDanger]}>
@@ -268,6 +355,28 @@ function SectionRow({
 }
 
 const styles = StyleSheet.create({
+  identity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.lg,
+    marginBottom: spacing.xl,
+  },
+  identityName: { ...type.title, color: colors.text },
+  identityMeta: { ...type.caption, color: colors.textMuted, marginTop: 2 },
+  gaugeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.lg },
+  gaugeText: { ...type.bodyStrong, color: colors.text, fontSize: 15 },
+  byAccount: { marginTop: spacing.lg },
+  accountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  accountRowLast: { borderBottomWidth: 0 },
+  accountName: { ...type.bodyStrong, color: colors.text },
+  accountPnl: { ...type.bodyStrong, fontSize: 14, minWidth: 96, textAlign: 'right' },
   section: { ...type.heading, color: colors.text },
   sectionRow: {
     flexDirection: 'row',
@@ -278,7 +387,7 @@ const styles = StyleSheet.create({
   sectionIcon: {
     width: 30,
     height: 30,
-    borderRadius: 10,
+    borderRadius: radius.md,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.accentSoft,

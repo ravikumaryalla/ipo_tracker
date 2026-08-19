@@ -1,21 +1,33 @@
+/**
+ * Demat accounts.
+ *
+ * This list is built from `listAccountSummaries`, which returns labels only and
+ * so renders while the vault is still locked. The credentials themselves — DP
+ * ID, client ID, bank, UPI, password, MPIN — live behind decryption and are
+ * shown on the detail screen. That split is deliberate: a locked vault should
+ * still let you see which accounts exist.
+ */
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import {
+  AppHeader,
+  Avatar,
   Badge,
-  Button,
+  Card,
   EmptyState,
   ErrorText,
-  Heading,
-  ListRow,
+  HeaderAction,
+  Icon,
   Loading,
   Screen,
 } from '../../components/ui';
-import { colors, spacing, type } from '../../constants/theme';
-import { listBrokers } from '../../lib/db/brokers';
+import { colors, motion, spacing, type } from '../../constants/theme';
 import { listAccountSummaries } from '../../lib/db/accounts';
+import { listBrokers } from '../../lib/db/brokers';
 
 /** Warn when a password has gone a year without a change. */
 const STALE_PASSWORD_DAYS = 365;
@@ -39,20 +51,23 @@ export default function AccountsTab() {
   const total = accounts.data?.length ?? 0;
 
   return (
-    <Screen inset>
-      <Heading
-        sub={
-          total > 0
-            ? `${total} demat account${total === 1 ? '' : 's'}, credentials encrypted on this device.`
-            : 'Credentials are encrypted on this device before they ever leave it.'
-        }
-      >
-        Accounts
-      </Heading>
-
+    <Screen
+      inset
+      header={
+        <AppHeader
+          title="Demat Accounts"
+          right={
+            <HeaderAction
+              icon="add"
+              label="Add demat account"
+              color={colors.accent}
+              onPress={() => router.push('/accounts/new')}
+            />
+          }
+        />
+      }
+    >
       <ErrorText>{accounts.error instanceof Error ? accounts.error.message : null}</ErrorText>
-
-      <Button title="Add demat account" icon="add" onPress={() => router.push('/accounts/new')} />
 
       {total === 0 ? (
         <EmptyState
@@ -64,36 +79,59 @@ export default function AccountsTab() {
         accounts.data?.map((account, i) => {
           const age = daysSince(account.password_changed_at);
           const stale = age !== null && age > STALE_PASSWORD_DAYS;
+          const broker = brokerName(account.broker_id);
 
           return (
-            <ListRow
+            <Animated.View
               key={account.id}
-              index={i}
-              icon="accounts"
-              accent={
-                !account.is_active
-                  ? colors.textFaint
-                  : stale
-                    ? colors.warning
-                    : colors.accent
-              }
-              title={account.nickname}
-              subtitle={brokerName(account.broker_id)}
-              onPress={() => router.push(`/accounts/${account.id}`)}
-              right={
-                <View style={styles.tags}>
-                  {!account.is_active && <Badge label="Inactive" tone="muted" />}
-                  {stale && <Badge label={`${age}d old`} tone="warning" />}
-                </View>
-              }
-            />
+              entering={FadeInDown.delay(i * motion.stagger).duration(motion.base)}
+            >
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={account.nickname}
+                onPress={() => router.push(`/accounts/${account.id}`)}
+              >
+                <Card elevation={1}>
+                  <View style={styles.head}>
+                    <Avatar
+                      name={broker}
+                      size={40}
+                      color={account.is_active ? undefined : colors.textFaint}
+                    />
+                    <View style={styles.headText}>
+                      <Text style={styles.name} numberOfLines={1}>
+                        {account.nickname}
+                      </Text>
+                      <Text style={styles.broker} numberOfLines={1}>
+                        {broker}
+                      </Text>
+                    </View>
+                    <View style={styles.tags}>
+                      {!account.is_active && (
+                        <Badge label="Inactive" tone="muted" variant="filled" size="small" />
+                      )}
+                      {stale && (
+                        <Badge
+                          label={`${age}d old`}
+                          tone="warning"
+                          variant="filled"
+                          size="small"
+                        />
+                      )}
+                    </View>
+                    <Icon name="chevron" size={18} color={colors.textFaint} />
+                  </View>
+                </Card>
+              </Pressable>
+            </Animated.View>
           );
         })
       )}
 
       {total > 0 && (
         <Text style={styles.footnote}>
-          Passwords older than a year are flagged. Tap an account to rotate its credentials.
+          Credentials are encrypted on this device before they ever leave it. Passwords older than
+          a year are flagged — tap an account to rotate them.
         </Text>
       )}
     </Screen>
@@ -101,6 +139,10 @@ export default function AccountsTab() {
 }
 
 const styles = StyleSheet.create({
+  head: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  headText: { flex: 1, minWidth: 0 },
+  name: { ...type.heading, color: colors.text },
+  broker: { ...type.caption, color: colors.textMuted, marginTop: 1 },
   tags: { alignItems: 'flex-end', gap: spacing.xs },
   footnote: {
     ...type.caption,
