@@ -24,6 +24,14 @@
  * only on an unambiguous exact company-name match — a manually-added IPO
  * would otherwise never get a KFintech match at all.
  *
+ * `dedupeIpoRows` is the other narrow exception: it also repoints
+ * `ipo_applications.ipo_id` and `ipo_gmp.ipo_id`. That's safe because it only
+ * ever merges two auto-synced (`created_by is null`) rows that already refer
+ * to the same company and open date — never anything a user typed — and it
+ * only ever moves an application's foreign key, dropping the row entirely
+ * only when the keeper already has an identical one. See its own comment for
+ * why this needs to run at all.
+ *
  * KNOWN GAP: `ipos_symbol_open_idx` is a global unique index on
  * (symbol, open_date), not scoped by created_by. If a user manually adds an IPO
  * that a provider later syncs under the same symbol and open date, the upsert
@@ -675,13 +683,20 @@ async function hasSucceededBefore(client: SupabaseClient, provider: string): Pro
   return (count ?? 0) > 0;
 }
 
-async function syncKfintechCompanies(client: SupabaseClient): Promise<number> {
+/** Result of a registrar-dropdown match pass — used to log which registrar ran and what it saw. */
+type CompanyMatchResult = { matched: number; latest: string | null };
+
+async function syncKfintechCompanies(client: SupabaseClient): Promise<CompanyMatchResult> {
   const companies = await fetchKfintechCompanies();
   const indexes = await loadIpoIndexes(client, { includeManual: true });
 
+  // Threaded through the whole dropdown pass so that when more than one entry
+  // would match the same ipos row, the first (topmost) one wins — see
+  // resolveCompanyMatch in parse.ts.
+  const claimed = new Set<string>();
   let matched = 0;
   for (const company of companies) {
-    const id = resolveKfintechCompanyMatch(company, indexes);
+    const id = resolveKfintechCompanyMatch(company, indexes, claimed);
     if (!id) continue;
     // Deliberately not `.is('created_by', null)` here — see the file header.
     const { error } = await client
@@ -698,7 +713,7 @@ async function syncKfintechCompanies(client: SupabaseClient): Promise<number> {
     if (!error) matched += 1;
   }
 
-  return matched;
+  return { matched, latest: companies[companies.length - 1]?.name ?? null };
 }
 
 // ---------------------------------------------------------------------------
@@ -730,13 +745,15 @@ async function fetchBigshareCompanies() {
   return companies;
 }
 
-async function syncBigshareCompanies(client: SupabaseClient): Promise<number> {
+async function syncBigshareCompanies(client: SupabaseClient): Promise<CompanyMatchResult> {
   const companies = await fetchBigshareCompanies();
   const indexes = await loadIpoIndexes(client, { includeManual: true });
 
+  // See the comment above syncKfintechCompanies's claimed set.
+  const claimed = new Set<string>();
   let matched = 0;
   for (const company of companies) {
-    const id = resolveBigshareCompanyMatch(company, indexes);
+    const id = resolveBigshareCompanyMatch(company, indexes, claimed);
     if (!id) continue;
     const { error } = await client
       .from('ipos')
@@ -745,7 +762,7 @@ async function syncBigshareCompanies(client: SupabaseClient): Promise<number> {
     if (!error) matched += 1;
   }
 
-  return matched;
+  return { matched, latest: companies[companies.length - 1]?.name ?? null };
 }
 
 // ---------------------------------------------------------------------------
@@ -774,13 +791,15 @@ async function fetchMufgCompanies() {
   return companies;
 }
 
-async function syncMufgCompanies(client: SupabaseClient): Promise<number> {
+async function syncMufgCompanies(client: SupabaseClient): Promise<CompanyMatchResult> {
   const companies = await fetchMufgCompanies();
   const indexes = await loadIpoIndexes(client, { includeManual: true });
 
+  // See the comment above syncKfintechCompanies's claimed set.
+  const claimed = new Set<string>();
   let matched = 0;
   for (const company of companies) {
-    const id = resolveMufgCompanyMatch(company, indexes);
+    const id = resolveMufgCompanyMatch(company, indexes, claimed);
     if (!id) continue;
     const { error } = await client
       .from('ipos')
@@ -789,7 +808,176 @@ async function syncMufgCompanies(client: SupabaseClient): Promise<number> {
     if (!error) matched += 1;
   }
 
-  return matched;
+  return { matched, latest: companies[companies.length - 1]?.name ?? null };
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate-row cleanup
+//
+// upsert()'s conflict target is (symbol, open_date) — see the KNOWN GAP note
+// at the top of this file for the other edge that falls out of that choice.
+// This is the other one: NSE and BSE are the only two providers with a real,
+// stable trading symbol. ipowatch and ipogyani each derive their own slug or
+// display symbol from the company name, and that derivation can drift
+// between runs for the same company — 'SUNSHINE' one day, 'SUNSHINEPICTURES'
+// the next — which upsert() sees as a brand new issue rather than an update,
+// leaving two `ipos` rows for one company/open_date. Migrations
+// 20260819000004 and 20260819000006 backfilled the duplicates that had
+// already piled up and fixed the one specific source that had been found
+// (BSE writing its own scrip code instead of reusing NSE's symbol), but
+// neither stops a *different* provider from drifting the same way in the
+// future. This runs every tick so that keeps getting cleaned up automatically
+// instead of silently stranding whichever row an `ipo_applications` row or a
+// registrar company id (kfintech/bigshare/mufg) happens to be attached to.
+// ---------------------------------------------------------------------------
+
+type DedupeIpoRow = {
+  id: string;
+  company_name: string;
+  open_date: string | null;
+  exchange: string | null;
+  listing_date: string | null;
+  allotment_date: string | null;
+  registrar: string | null;
+  registrar_url: string | null;
+  kfintech_company_id: string | null;
+  bigshare_company_id: string | null;
+  mufg_company_id: string | null;
+  listing_price: number | null;
+  current_price: number | null;
+  lot_size: number | null;
+  issue_size_cr: number | null;
+  last_synced_at: string | null;
+  created_at: string;
+};
+
+/**
+ * Same keeper-selection order as 20260819000006_dedupe_ipo_bse_nse_symbol.sql:
+ * prefer the NSE-sourced row, then the most complete, then the most recently
+ * synced, then the oldest (first-seen) as a final tiebreaker.
+ */
+function pickKeeper(rows: DedupeIpoRow[]): DedupeIpoRow {
+  const rank = (r: DedupeIpoRow) =>
+    (r.exchange === 'NSE' ? 0 : 1) * 8 +
+    (r.listing_date ? 0 : 1) * 4 +
+    (r.allotment_date ? 0 : 1) * 2 +
+    (r.registrar ? 0 : 1);
+
+  return [...rows].sort((a, b) => {
+    const diff = rank(a) - rank(b);
+    if (diff !== 0) return diff;
+    const aSynced = a.last_synced_at ?? '';
+    const bSynced = b.last_synced_at ?? '';
+    if (aSynced !== bSynced) return aSynced > bSynced ? -1 : 1;
+    return a.created_at < b.created_at ? -1 : 1;
+  })[0];
+}
+
+/** Merge `loser` into `keeper`, additive-field coalesce only — see pickKeeper. */
+async function mergeIpoRow(
+  client: SupabaseClient,
+  keeper: DedupeIpoRow,
+  loser: DedupeIpoRow,
+): Promise<void> {
+  keeper.registrar ??= loser.registrar;
+  keeper.registrar_url ??= loser.registrar_url;
+  keeper.kfintech_company_id ??= loser.kfintech_company_id;
+  keeper.bigshare_company_id ??= loser.bigshare_company_id;
+  keeper.mufg_company_id ??= loser.mufg_company_id;
+  keeper.listing_price ??= loser.listing_price;
+  keeper.current_price ??= loser.current_price;
+  keeper.lot_size ??= loser.lot_size;
+  keeper.issue_size_cr ??= loser.issue_size_cr;
+
+  const { error: mergeError } = await client
+    .from('ipos')
+    .update({
+      registrar: keeper.registrar,
+      registrar_url: keeper.registrar_url,
+      kfintech_company_id: keeper.kfintech_company_id,
+      bigshare_company_id: keeper.bigshare_company_id,
+      mufg_company_id: keeper.mufg_company_id,
+      listing_price: keeper.listing_price,
+      current_price: keeper.current_price,
+      lot_size: keeper.lot_size,
+      issue_size_cr: keeper.issue_size_cr,
+    })
+    .eq('id', keeper.id);
+  if (mergeError) throw mergeError;
+
+  const { error: gmpError } = await client
+    .from('ipo_gmp')
+    .update({ ipo_id: keeper.id })
+    .eq('ipo_id', loser.id);
+  if (gmpError) throw gmpError;
+
+  // A loser application only gets dropped outright when the keeper already
+  // has an identical (demat_account_id, category) one — otherwise it's the
+  // user's only record of that application and must be kept, just repointed.
+  const { data: keeperApps, error: keeperAppsError } = await client
+    .from('ipo_applications')
+    .select('demat_account_id, category')
+    .eq('ipo_id', keeper.id);
+  if (keeperAppsError) throw keeperAppsError;
+  const keeperKeys = new Set(
+    (keeperApps ?? []).map((a) => `${a.demat_account_id}|${a.category}`),
+  );
+
+  const { data: loserApps, error: loserAppsError } = await client
+    .from('ipo_applications')
+    .select('id, demat_account_id, category')
+    .eq('ipo_id', loser.id);
+  if (loserAppsError) throw loserAppsError;
+
+  for (const app of loserApps ?? []) {
+    if (keeperKeys.has(`${app.demat_account_id}|${app.category}`)) {
+      const { error } = await client.from('ipo_applications').delete().eq('id', app.id);
+      if (error) throw error;
+    } else {
+      const { error } = await client
+        .from('ipo_applications')
+        .update({ ipo_id: keeper.id })
+        .eq('id', app.id);
+      if (error) throw error;
+    }
+  }
+
+  const { error: deleteError } = await client.from('ipos').delete().eq('id', loser.id);
+  if (deleteError) throw deleteError;
+}
+
+async function dedupeIpoRows(client: SupabaseClient): Promise<number> {
+  const { from, to } = windowAround(MATCH_WINDOW_DAYS);
+  const { data, error } = await client
+    .from('ipos')
+    .select(
+      'id, company_name, open_date, exchange, listing_date, allotment_date, registrar, registrar_url, kfintech_company_id, bigshare_company_id, mufg_company_id, listing_price, current_price, lot_size, issue_size_cr, last_synced_at, created_at',
+    )
+    .is('created_by', null)
+    .gte('open_date', from)
+    .lte('open_date', to);
+  if (error) throw error;
+
+  const groups = new Map<string, DedupeIpoRow[]>();
+  for (const row of (data ?? []) as DedupeIpoRow[]) {
+    const key = `${row.company_name}|${row.open_date}`;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(row);
+    else groups.set(key, [row]);
+  }
+
+  let merged = 0;
+  for (const rows of groups.values()) {
+    if (rows.length < 2) continue;
+    const keeper = pickKeeper(rows);
+    for (const loser of rows) {
+      if (loser.id === keeper.id) continue;
+      await mergeIpoRow(client, keeper, loser);
+      merged += 1;
+    }
+  }
+
+  return merged;
 }
 
 // ---------------------------------------------------------------------------
@@ -816,8 +1004,10 @@ Deno.serve(async (req) => {
   if (body?.onlyKfintech === true) {
     const outcome: Outcome = { provider: 'KFINTECH_MATCH', ok: false, rows: 0 };
     try {
-      outcome.rows = await syncKfintechCompanies(client);
+      const { matched, latest } = await syncKfintechCompanies(client);
+      outcome.rows = matched;
       outcome.ok = true;
+      outcome.message = `checked KFintech dropdown, latest: ${latest ?? '(none)'}`;
     } catch (e) {
       outcome.message = e instanceof Error ? e.message : String(e);
     }
@@ -835,8 +1025,10 @@ Deno.serve(async (req) => {
   if (body?.onlyBigshare === true) {
     const outcome: Outcome = { provider: 'BIGSHARE_MATCH', ok: false, rows: 0 };
     try {
-      outcome.rows = await syncBigshareCompanies(client);
+      const { matched, latest } = await syncBigshareCompanies(client);
+      outcome.rows = matched;
       outcome.ok = true;
+      outcome.message = `checked Bigshare dropdown, latest: ${latest ?? '(none)'}`;
     } catch (e) {
       outcome.message = e instanceof Error ? e.message : String(e);
     }
@@ -854,8 +1046,10 @@ Deno.serve(async (req) => {
   if (body?.onlyMufg === true) {
     const outcome: Outcome = { provider: 'MUFG_MATCH', ok: false, rows: 0 };
     try {
-      outcome.rows = await syncMufgCompanies(client);
+      const { matched, latest } = await syncMufgCompanies(client);
+      outcome.rows = matched;
       outcome.ok = true;
+      outcome.message = `checked MUFG dropdown, latest: ${latest ?? '(none)'}`;
     } catch (e) {
       outcome.message = e instanceof Error ? e.message : String(e);
     }
@@ -919,6 +1113,24 @@ Deno.serve(async (req) => {
   // Computed before the GMP leg is folded in, so a dead grey-market feed can
   // never turn a healthy IPO sync into an HTTP 502.
   const anyOk = outcomes.some((o) => o.ok);
+
+  // Runs before `loadIpoIndexes` below so every later pass — GMP attachment,
+  // registrar matching — sees the merged rows rather than racing a duplicate
+  // that's about to be deleted out from under it.
+  const dedupe: Outcome = { provider: 'DEDUPE', ok: false, rows: 0 };
+  try {
+    dedupe.rows = await dedupeIpoRows(client);
+    dedupe.ok = true;
+  } catch (e) {
+    dedupe.message = e instanceof Error ? e.message : String(e);
+  }
+  outcomes.push(dedupe);
+  await client.from('sync_log').insert({
+    provider: dedupe.provider,
+    ok: dedupe.ok,
+    rows_upserted: dedupe.rows,
+    message: dedupe.message ?? null,
+  });
 
   // Loaded once and shared by every pass below. All four consumers run after
   // the provider loop, so they all want the same post-upsert snapshot — and
@@ -988,8 +1200,10 @@ Deno.serve(async (req) => {
     kfintech.message = 'skipped: already synced once';
   } else {
     try {
-      kfintech.rows = await syncKfintechCompanies(client);
+      const { matched, latest } = await syncKfintechCompanies(client);
+      kfintech.rows = matched;
       kfintech.ok = true;
+      kfintech.message = `checked KFintech dropdown, latest: ${latest ?? '(none)'}`;
     } catch (e) {
       kfintech.message = e instanceof Error ? e.message : String(e);
     }
@@ -1006,8 +1220,10 @@ Deno.serve(async (req) => {
   // see the comment above syncBigshareCompanies for why.
   const bigshare: Outcome = { provider: 'BIGSHARE_MATCH', ok: false, rows: 0 };
   try {
-    bigshare.rows = await syncBigshareCompanies(client);
+    const { matched, latest } = await syncBigshareCompanies(client);
+    bigshare.rows = matched;
     bigshare.ok = true;
+    bigshare.message = `checked Bigshare dropdown, latest: ${latest ?? '(none)'}`;
   } catch (e) {
     bigshare.message = e instanceof Error ? e.message : String(e);
   }
@@ -1022,8 +1238,10 @@ Deno.serve(async (req) => {
   // Same reasoning as Bigshare's — runs every tick, not once ever.
   const mufg: Outcome = { provider: 'MUFG_MATCH', ok: false, rows: 0 };
   try {
-    mufg.rows = await syncMufgCompanies(client);
+    const { matched, latest } = await syncMufgCompanies(client);
+    mufg.rows = matched;
     mufg.ok = true;
+    mufg.message = `checked MUFG dropdown, latest: ${latest ?? '(none)'}`;
   } catch (e) {
     mufg.message = e instanceof Error ? e.message : String(e);
   }

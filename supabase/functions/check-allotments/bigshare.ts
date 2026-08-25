@@ -12,6 +12,17 @@
  * there's no pickMatch-style disambiguation needed here), and a non-match
  * returns the same shape with every field blank except
  * `DPID: "No data found"`.
+ *
+ * Re-confirmed live on 2026-08-21: the endpoint now gates every query behind
+ * a captcha. Posting without `CaptchaToken`/`CaptchaAnswer`/`ResultToken` in
+ * the body throws server-side and returns a raw HTTP 500 (regardless of which
+ * company or PAN is queried — this is what previously surfaced to users as
+ * "Bigshare allotment check responded 500"). Including those three fields,
+ * even empty, avoids the crash and gets back a well-formed 200 instead:
+ * `{"d":{...blank fields...,"Status":"CAPTCHA","Message":"Invalid captcha
+ * code. Please try again."}}`. There is no headless way to solve that
+ * captcha, so `bigshareUnavailableMessage` exists to tell that case apart
+ * from a genuine not-yet-allotted result.
  */
 
 export type AllotmentOutcome = 'ALLOTTED' | 'PARTIAL' | 'NOT_ALLOTTED';
@@ -33,6 +44,8 @@ type BigshareResponse = {
     Name?: unknown;
     APPLIED?: unknown;
     ALLOTED?: unknown;
+    Status?: unknown;
+    Message?: unknown;
   };
 };
 
@@ -64,6 +77,25 @@ export function parseBigshareAllotmentBody(body: unknown): BigshareAllotmentMatc
     sharesApplied: toNumberOrNull(d.APPLIED),
     allotedText: d.ALLOTED != null ? String(d.ALLOTED) : '',
   };
+}
+
+/**
+ * Bigshare's `Status` field is `"OK"` (a real record, handled by
+ * `parseBigshareAllotmentBody`) or `"NOTFOUND"` (no record yet, also a plain
+ * `null` from that function) on a normal query. Anything else — currently
+ * only ever seen as `"CAPTCHA"`, see the file header, but the page's own JS
+ * also handles `"RATELIMIT"` and `"WARMING"` the same way, so all three are
+ * treated identically here — means Bigshare refused to actually run the
+ * lookup. Returns a user-facing message in that case, or null when the query
+ * ran normally.
+ */
+export function bigshareUnavailableMessage(body: unknown): string | null {
+  const d = (body as BigshareResponse)?.d;
+  const status = d?.Status != null ? String(d.Status) : '';
+  if (!status || status === 'OK' || status === 'NOTFOUND') return null;
+
+  const detail = d?.Message != null ? String(d.Message) : status;
+  return `Bigshare couldn't complete this check automatically (${detail}) — check manually at ipo.bigshareonline.com`;
 }
 
 /**

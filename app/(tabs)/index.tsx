@@ -35,7 +35,6 @@ import {
   DonutGauge,
   EmptyState,
   ErrorText,
-  HeaderAction,
   Loading,
   Screen,
   Segmented,
@@ -189,7 +188,7 @@ export default function Home() {
     if (!lastOk) {
       const failure = listRows?.[0];
       return failure
-        ? `IPO sync is failing (${failure.provider}: ${failure.message ?? 'unknown error'}). Add IPOs manually until it recovers.`
+        ? `IPO sync is failing (${failure.provider}: ${failure.message ?? 'unknown error'}).`
         : null;
     }
     const hours = (Date.now() - new Date(lastOk.ran_at).getTime()) / 3_600_000;
@@ -202,19 +201,7 @@ export default function Home() {
   // rather than as a bare spinner: without it the screen has no header and no
   // safe-area inset while loading, so the spinner sits under the status bar
   // and the layout jumps once data lands.
-  const header = (
-    <AppHeader
-      title="IPO Tracker"
-      right={
-        <HeaderAction
-          icon="add"
-          label="Add an IPO manually"
-          color={colors.accent}
-          onPress={() => router.push('/ipos/new')}
-        />
-      }
-    />
-  );
+  const header = <AppHeader title="IPO Tracker" />;
 
   if (ipos.isLoading) {
     return (

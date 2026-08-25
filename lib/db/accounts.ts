@@ -26,6 +26,7 @@ export const SECRET_FIELDS = [
   'phone',
   'password',
   'mpin',
+  'tpin',
   'upi_id',
   'linked_bank',
   'notes',

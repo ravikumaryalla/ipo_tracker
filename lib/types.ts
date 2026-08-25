@@ -61,6 +61,7 @@ export type DematAccountRow = {
   phone_enc: string | null;
   password_enc: string | null;
   mpin_enc: string | null;
+  tpin_enc: string | null;
   upi_id_enc: string | null;
   linked_bank_enc: string | null;
   /** Deliberately unencrypted — see 20260811000007_pan_plaintext.sql. */

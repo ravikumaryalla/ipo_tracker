@@ -37,6 +37,7 @@ import {
   parsePriceBand,
   resolveIpoId,
   resolveKfintechCompanyMatch,
+  sharesLongPrefix,
   slugFromPath,
   statusFor,
   stripTags,
@@ -210,22 +211,51 @@ describe('resolveKfintechCompanyMatch', () => {
 
   it('matches an unambiguous company by name alone, with no open date available', () => {
     const company = { clientId: '44065980180', name: 'MV ELECTROSYSTEMS LIMITED' };
-    expect(resolveKfintechCompanyMatch(company, indexes)).toBe('ipo-mv');
+    expect(resolveKfintechCompanyMatch(company, indexes, new Set())).toBe('ipo-mv');
   });
 
-  it('refuses to guess when two ipos rows share a normalised name', () => {
+  it('bridges a second-word spelling variant instead of refusing', () => {
+    const lalita = buildIpoIndexes([
+      { id: 'ipo-lalita', symbol: 'LALITA', company_name: 'Lalita Jewellery Mart Ltd', open_date: '2026-08-01' },
+    ]);
+    expect(
+      resolveKfintechCompanyMatch({ clientId: '1', name: 'LALITA JEWELLERS' }, lalita, new Set()),
+    ).toBe('ipo-lalita');
+    // A genuinely different second word must still refuse.
+    expect(
+      resolveKfintechCompanyMatch({ clientId: '2', name: 'LALITA STEEL' }, lalita, new Set()),
+    ).toBeNull();
+  });
+
+  it('keeps the first (topmost) dropdown entry when two would match the same row', () => {
     const ambiguous = buildIpoIndexes([
       { id: 'a', symbol: 'X1', company_name: 'Repeat Co', open_date: '2026-08-01' },
       { id: 'b', symbol: 'X2', company_name: 'Repeat Co', open_date: '2026-09-01' },
     ]);
+    const claimed = new Set<string>();
+    // First entry processed claims 'a' — mirrors the topmost dropdown row winning.
     expect(
-      resolveKfintechCompanyMatch({ clientId: '1', name: 'REPEAT CO LIMITED' }, ambiguous),
-    ).toBeNull();
+      resolveKfintechCompanyMatch({ clientId: '1', name: 'REPEAT CO LIMITED' }, ambiguous, claimed),
+    ).toBe('a');
+    // A later look-alike entry, sharing the same claimed set, must not steal it.
+    expect(
+      resolveKfintechCompanyMatch({ clientId: '2', name: 'REPEAT CO LIMITED' }, ambiguous, claimed),
+    ).toBe('b');
   });
 
   it('returns null for an NCD/bond entry with no matching equity IPO', () => {
     const company = { clientId: '64562521850', name: 'POWER FINANCE CORPORATION LIMITED - NCDS' };
-    expect(resolveKfintechCompanyMatch(company, indexes)).toBeNull();
+    expect(resolveKfintechCompanyMatch(company, indexes, new Set())).toBeNull();
+  });
+});
+
+describe('sharesLongPrefix', () => {
+  it('bridges a plural/spelling variant of the same word', () => {
+    expect(sharesLongPrefix('jewellery', 'jewellers')).toBe(true);
+  });
+
+  it('rejects unrelated short words that happen to share a few letters', () => {
+    expect(sharesLongPrefix('steel', 'steamers')).toBe(false);
   });
 });
 

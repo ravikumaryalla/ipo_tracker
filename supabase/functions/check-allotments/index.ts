@@ -49,7 +49,11 @@
  */
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 
-import { bigshareStatusFor, parseBigshareAllotmentBody } from './bigshare.ts';
+import {
+  bigshareStatusFor,
+  bigshareUnavailableMessage,
+  parseBigshareAllotmentBody,
+} from './bigshare.ts';
 import { encryptMufgToken, mufgStatusFor, parseMufgAllotmentBody } from './mufg.ts';
 import {
   type AllotmentOutcome,
@@ -81,6 +85,7 @@ type CandidateRow = {
   application_no: string | null;
   ipos: {
     company_name: string;
+    registrar: string | null;
     kfintech_company_id: string | null;
     bigshare_company_id: string | null;
     mufg_company_id: string | null;
@@ -120,7 +125,7 @@ async function loadCandidates(client: SupabaseClient): Promise<CandidateRow[]> {
   const { data, error } = await client
     .from('ipo_applications')
     .select(
-      'id, user_id, shares_applied, application_no, ipos(company_name, kfintech_company_id, bigshare_company_id, mufg_company_id, allotment_date), demat_accounts(pan)',
+      'id, user_id, shares_applied, application_no, ipos(company_name, registrar, kfintech_company_id, bigshare_company_id, mufg_company_id, allotment_date), demat_accounts(pan)',
     )
     .eq('status', 'APPLIED');
   if (error) throw error;
@@ -179,7 +184,7 @@ async function touchCheckedAt(
 }
 
 type ProviderCheckResult =
-  | { outcome: 'not-yet' }
+  | { outcome: 'not-yet'; message?: string }
   | { outcome: 'resolved'; status: AllotmentOutcome; sharesAllotted: number };
 
 async function checkOneKfintech(row: DueRow): Promise<ProviderCheckResult> {
@@ -230,6 +235,12 @@ async function checkOneBigshare(row: DueRow): Promise<ProviderCheckResult> {
       txtClId: '',
       ddlType: '0',
       lang: 'en',
+      // Required present (even empty) since Bigshare added captcha-gating to
+      // this endpoint — omitting them throws server-side and returns a raw
+      // 500 regardless of company/PAN. See bigshare.ts's file header.
+      CaptchaToken: '',
+      CaptchaAnswer: '',
+      ResultToken: '',
     }),
   });
 
@@ -237,6 +248,13 @@ async function checkOneBigshare(row: DueRow): Promise<ProviderCheckResult> {
   if (!res.ok) throw new Error(`Bigshare allotment check responded ${res.status}`);
 
   const body = await res.json().catch(() => null);
+
+  // No headless way to solve the captcha this now asks for — tell the caller
+  // to check manually rather than reporting either an error or a false
+  // not-yet-allotted result.
+  const unavailable = bigshareUnavailableMessage(body);
+  if (unavailable) return { outcome: 'not-yet', message: unavailable };
+
   const match = parseBigshareAllotmentBody(body);
   if (!match) return { outcome: 'not-yet' };
 
@@ -309,7 +327,7 @@ async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResul
 
     if (result.outcome === 'not-yet') {
       await touchCheckedAt(client, [row.id]);
-      return { row, outcome: 'not-yet' };
+      return { row, outcome: 'not-yet', message: result.message };
     }
 
     const { error } = await client
@@ -360,7 +378,7 @@ async function loadCandidatesByIds(
   const { data, error } = await client
     .from('ipo_applications')
     .select(
-      'id, user_id, shares_applied, application_no, ipos(company_name, kfintech_company_id, bigshare_company_id, mufg_company_id, allotment_date), demat_accounts(pan)',
+      'id, user_id, shares_applied, application_no, ipos(company_name, registrar, kfintech_company_id, bigshare_company_id, mufg_company_id, allotment_date), demat_accounts(pan)',
     )
     .in('id', ids);
   if (error) throw error;
@@ -507,7 +525,9 @@ async function handleOnDemand(
       results.push({
         id: row.id,
         outcome: 'no-match',
-        message: 'allotment not released yet',
+        message: row.ipos?.registrar
+          ? `${row.ipos.registrar} hasn't listed this IPO in its allotment lookup yet`
+          : 'allotment not released yet',
       });
       continue;
     }

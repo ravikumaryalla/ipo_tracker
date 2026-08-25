@@ -6,6 +6,7 @@
 import {
   type AllotmentOutcome,
   bigshareStatusFor,
+  bigshareUnavailableMessage,
   type BigshareAllotmentMatch,
   parseBigshareAllotmentBody,
 } from './bigshare.ts';
@@ -50,6 +51,44 @@ describe('parseBigshareAllotmentBody', () => {
     expect(parseBigshareAllotmentBody({})).toBeNull();
     expect(parseBigshareAllotmentBody(null)).toBeNull();
     expect(parseBigshareAllotmentBody({ d: {} })).toBeNull();
+  });
+});
+
+describe('bigshareUnavailableMessage', () => {
+  it('is null on a normal matched (Status: OK) response', () => {
+    const body = { d: { Status: 'OK', DPID: '1208940001869634' } };
+    expect(bigshareUnavailableMessage(body)).toBeNull();
+  });
+
+  it('is null on a normal no-match (Status: NOTFOUND) response', () => {
+    const body = { d: { Status: 'NOTFOUND', DPID: 'No data found' } };
+    expect(bigshareUnavailableMessage(body)).toBeNull();
+  });
+
+  it('is null when Status is absent, same as older/pre-captcha responses', () => {
+    expect(bigshareUnavailableMessage({ d: { DPID: '1208940001869634' } })).toBeNull();
+    expect(bigshareUnavailableMessage({})).toBeNull();
+    expect(bigshareUnavailableMessage(null)).toBeNull();
+  });
+
+  it('surfaces the live captcha-required response as a message', () => {
+    const body = {
+      d: {
+        Status: 'CAPTCHA',
+        Message: 'Invalid captcha code. Please try again.',
+        DPID: '',
+      },
+    };
+    expect(bigshareUnavailableMessage(body)).toBe(
+      "Bigshare couldn't complete this check automatically (Invalid captcha code. Please try again.) — check manually at ipo.bigshareonline.com",
+    );
+  });
+
+  it('falls back to the raw Status when Message is absent', () => {
+    const body = { d: { Status: 'RATELIMIT' } };
+    expect(bigshareUnavailableMessage(body)).toBe(
+      "Bigshare couldn't complete this check automatically (RATELIMIT) — check manually at ipo.bigshareonline.com",
+    );
   });
 });
 

@@ -38,36 +38,6 @@ export function bucketOf(ipo: Ipo, today = new Date().toISOString().slice(0, 10)
   return 'upcoming';
 }
 
-export type ManualIpoInput = {
-  symbol: string;
-  company_name: string;
-  segment: 'MAINBOARD' | 'SME';
-  open_date: string | null;
-  close_date: string | null;
-  allotment_date: string | null;
-  listing_date: string | null;
-  price_band_min: number | null;
-  price_band_max: number | null;
-  lot_size: number | null;
-  registrar: string | null;
-};
-
-export async function createManualIpo(userId: string, input: ManualIpoInput): Promise<Ipo> {
-  const { data, error } = await supabase
-    .from('ipos')
-    .insert({
-      ...input,
-      symbol: input.symbol.trim().toUpperCase(),
-      source: 'MANUAL',
-      created_by: userId,
-      exchange: 'NSE',
-    })
-    .select()
-    .single();
-  if (error) throw dbError(error);
-  return data;
-}
-
 export async function updateIpo(id: string, patch: Partial<Ipo>): Promise<Ipo> {
   const { data, error } = await supabase.from('ipos').update(patch).eq('id', id).select().single();
   if (error) throw dbError(error);

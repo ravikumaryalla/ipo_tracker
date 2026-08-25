@@ -28,13 +28,13 @@ function outcomeLabel(r: OnDemandCheckResult): string {
     if (r.status === 'PARTIAL') return `Partial, ${r.shares_allotted} of ${r.shares_applied} shares`;
     return 'Not allotted';
   }
-  if (r.outcome === 'not-yet') return 'Results were not announced';
+  if (r.outcome === 'not-yet') return r.message ?? 'Results were not announced';
   return r.message ?? 'Could not check.';
 }
 
 function outcomeTone(r: OnDemandCheckResult): AllotmentCheckResultTone {
   if (r.outcome === 'resolved') return r.status === 'ALLOTTED' || r.status === 'PARTIAL' ? 'success' : 'neutral';
-  if (r.outcome === 'not-yet') return 'neutral';
+  if (r.outcome === 'not-yet') return r.message ? 'warning' : 'neutral';
   return 'warning';
 }
 

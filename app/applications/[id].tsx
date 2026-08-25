@@ -77,7 +77,10 @@ export default function ApplicationDetail() {
                 }
               : { title: 'Not allotted', message: 'No shares this time.' }
           : result.outcome === 'not-yet'
-            ? { title: 'Not announced yet', message: 'Results were not announced.' }
+            ? {
+                title: result.message ? 'Could not check automatically' : 'Not announced yet',
+                message: result.message ?? 'Results were not announced.',
+              }
             : { title: 'Could not check', message: result.message ?? 'Please try again.' };
       Alert.alert(title, message);
     },
