@@ -53,8 +53,12 @@ import {
   BIGSHARE_BLOCKED_MESSAGE,
   BIGSHARE_CAPTCHA_LENGTH,
   BIGSHARE_CAPTCHA_UNREAD_MESSAGE,
+  BIGSHARE_DEADLINE_MESSAGE,
+  BIGSHARE_MIN_REQUEST_GAP_MS,
+  bigshareRunDeadlineExceeded,
   bigshareStatusFor,
   bigshareUnavailableMessage,
+  bigshareWaitMs,
   type BigshareCaptchaChallenge,
   isRetryableCaptchaStatus,
   parseBigshareAllotmentBody,
@@ -116,6 +120,20 @@ const BIGSHARE_CAPTCHA_ATTEMPTS = 5;
  * situation the 15-minute cron creates.
  */
 const OCR_TIMEOUT_MS = 60_000;
+
+/**
+ * How long a run may keep starting new Bigshare lookups.
+ *
+ * Sized against Supabase's free-plan wall clock of 150s (paid is 400s, and
+ * this can rise to ~300s there). The margin is deliberate: the deadline only
+ * gates *starting* a row, and a row already in flight can still spend a full
+ * captcha budget — roughly 25s at worst — before the invocation has to finish
+ * writing and reply.
+ *
+ * See bigshareRunDeadlineExceeded in bigshare.ts for why a time budget became
+ * necessary once requests were paced.
+ */
+const BIGSHARE_RUN_DEADLINE_MS = 110_000;
 
 const MUFG_BASE = 'https://in.mpms.mufg.com/Initial_Offer';
 const MUFG_TOKEN_URL = `${MUFG_BASE}/IPO.aspx/generateToken`;
@@ -239,8 +257,13 @@ type ProviderCheckResult =
  *
  * See BIGSHARE_BLOCK_TRIP_AFTER in bigshare.ts for what the count means and
  * why an unbroken streak is the only form of it worth acting on.
+ *
+ * `deadlineAt` carries the other reason a run stops starting Bigshare
+ * lookups: it has run out of wall clock. Both live here because both are
+ * one-run state that every row has to consult, and both end a lookup the same
+ * way — "not yet", retried by the next sweep.
  */
-type BigshareCircuit = { consecutiveExhausted: number };
+type BigshareCircuit = { consecutiveExhausted: number; deadlineAt: number };
 
 async function checkOneKfintech(row: DueRow): Promise<ProviderCheckResult> {
   const res = await fetch(KFINTECH_QUERY_URL, {
@@ -265,18 +288,57 @@ async function checkOneKfintech(row: DueRow): Promise<ProviderCheckResult> {
 }
 
 /**
+ * The single queue every request to ipo.bigshareonline.com passes through, so
+ * that no two of them are ever in flight at once and consecutive ones are at
+ * least BIGSHARE_MIN_REQUEST_GAP_MS apart.
+ *
+ * Chained rather than a bare timestamp comparison, because a comparison is not
+ * a lock: two callers reading the same `nextAllowedAt` would both decide they
+ * could go. Chaining makes this an actual serial queue, which matters in the
+ * one case row-level serialism does not cover — the 15-minute cron sweep and
+ * an on-demand "Check status" tap landing in the same warm isolate.
+ *
+ * Module scope here is deliberate, and is the opposite of the choice made for
+ * BigshareCircuit just below. The circuit is per-run precisely so one blocked
+ * sweep cannot suppress a later one that would have worked; a throttle has no
+ * such failure mode — persisting across invocations in a warm isolate is the
+ * entire point, and its worst case is a 1.5s wait.
+ */
+let bigshareQueue: Promise<unknown> = Promise.resolve();
+let bigshareNextAllowedAt = 0;
+
+function pacedBigshareFetch<T>(fn: () => Promise<T>): Promise<T> {
+  const result = bigshareQueue.then(async () => {
+    const wait = bigshareWaitMs(bigshareNextAllowedAt, Date.now());
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    try {
+      return await fn();
+    } finally {
+      // Measured from when the request finished rather than when it started:
+      // the gentler of the two readings, and the simpler to reason about.
+      bigshareNextAllowedAt = Date.now() + BIGSHARE_MIN_REQUEST_GAP_MS;
+    }
+  });
+  // One failed request must not poison the queue for every request behind it.
+  bigshareQueue = result.catch(() => {});
+  return result;
+}
+
+/**
  * Pulls a fresh challenge from Captcha.ashx. See bigshare.ts's header for the
  * shape and lifetime of what comes back; the short version is that it's
  * stateless, so no cookie jar is needed here.
  */
 async function fetchBigshareCaptcha(): Promise<BigshareCaptchaChallenge> {
-  const res = await fetch(BIGSHARE_CAPTCHA_URL, {
-    headers: {
-      ...BROWSER_HEADERS,
-      Referer: 'https://ipo.bigshareonline.com/ipo_status.html',
-      'X-Requested-With': 'XMLHttpRequest',
-    },
-  });
+  const res = await pacedBigshareFetch(() =>
+    fetch(BIGSHARE_CAPTCHA_URL, {
+      headers: {
+        ...BROWSER_HEADERS,
+        Referer: 'https://ipo.bigshareonline.com/ipo_status.html',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    }),
+  );
 
   // 503 is Bigshare shedding load or still warming, per its own page's error
   // handling — same "back off" meaning as 429, so it's reported the same way.
@@ -346,6 +408,13 @@ async function checkOneBigshare(
     return { outcome: 'not-yet', message: BIGSHARE_BLOCKED_MESSAGE };
   }
 
+  // Out of time. Checked here rather than in runChecks' loop so a skipped row
+  // still flows through checkOne, keeping its touchCheckedAt stamping and
+  // persistence behaviour without any of it being duplicated.
+  if (bigshareRunDeadlineExceeded(circuit.deadlineAt, Date.now())) {
+    return { outcome: 'not-yet', message: BIGSHARE_DEADLINE_MESSAGE };
+  }
+
   let body: unknown = null;
   let submitted = false;
 
@@ -358,32 +427,34 @@ async function checkOneBigshare(
     if (!answer) continue;
     submitted = true;
 
-    const res = await fetch(BIGSHARE_QUERY_URL, {
-      method: 'POST',
-      headers: {
-        ...BROWSER_HEADERS,
-        'Content-Type': 'application/json; charset=UTF-8',
-        Origin: 'https://ipo.bigshareonline.com',
-        Referer: 'https://ipo.bigshareonline.com/ipo_status.html',
-        'X-Requested-With': 'XMLHttpRequest',
-      },
-      body: JSON.stringify({
-        Applicationno: '',
-        Company: row.companyId,
-        SelectionType: 'PN',
-        PanNo: row.pan,
-        txtcsdl: '',
-        txtDPID: '',
-        txtClId: '',
-        ddlType: '0',
-        lang: 'en',
-        CaptchaToken: challenge.token,
-        CaptchaAnswer: answer,
-        // Only ever used to re-read a record a captcha was already solved
-        // for, which is never what this is doing. See bigshare.ts's header.
-        ResultToken: '',
+    const res = await pacedBigshareFetch(() =>
+      fetch(BIGSHARE_QUERY_URL, {
+        method: 'POST',
+        headers: {
+          ...BROWSER_HEADERS,
+          'Content-Type': 'application/json; charset=UTF-8',
+          Origin: 'https://ipo.bigshareonline.com',
+          Referer: 'https://ipo.bigshareonline.com/ipo_status.html',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({
+          Applicationno: '',
+          Company: row.companyId,
+          SelectionType: 'PN',
+          PanNo: row.pan,
+          txtcsdl: '',
+          txtDPID: '',
+          txtClId: '',
+          ddlType: '0',
+          lang: 'en',
+          CaptchaToken: challenge.token,
+          CaptchaAnswer: answer,
+          // Only ever used to re-read a record a captcha was already solved
+          // for, which is never what this is doing. See bigshare.ts's header.
+          ResultToken: '',
+        }),
       }),
-    });
+    );
 
     if (res.status === 429) throw new Error('Bigshare is rate-limiting allotment checks');
     if (!res.ok) throw new Error(`Bigshare allotment check responded ${res.status}`);
@@ -527,6 +598,11 @@ async function checkOne(
  * throttled row degrades to "not yet" and waits a full 15 minutes for the
  * next sweep. So Bigshare rows go one at a time.
  *
+ * One at a time is necessary but not sufficient: a serial loop still fires
+ * back-to-back as fast as the network allows, which is its own way to be
+ * blocked. pacedBigshareFetch adds the spacing, and `deadlineAt` below bounds
+ * what that spacing can cost a single invocation.
+ *
  * Both call sites walk the returned array positionally (the on-demand
  * response body, and sendAllotmentPushes), so the two groups are stitched
  * back into the caller's original order rather than concatenated.
@@ -537,7 +613,10 @@ async function runChecks(client: SupabaseClient, rows: DueRow[]): Promise<CheckR
   // Fresh per run. Module scope would persist across invocations in a warm
   // isolate, so one blocked sweep could suppress Bigshare for later ones that
   // would have worked.
-  const circuit: BigshareCircuit = { consecutiveExhausted: 0 };
+  const circuit: BigshareCircuit = {
+    consecutiveExhausted: 0,
+    deadlineAt: Date.now() + BIGSHARE_RUN_DEADLINE_MS,
+  };
 
   const parallel: number[] = [];
   const serial: number[] = [];

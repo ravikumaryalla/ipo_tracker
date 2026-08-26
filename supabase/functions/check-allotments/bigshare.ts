@@ -210,6 +210,60 @@ export function shouldStopTryingBigshare(consecutiveExhausted: number): boolean 
 }
 
 /**
+ * Minimum gap between any two requests to ipo.bigshareonline.com. The captcha
+ * endpoint and the query endpoint share one budget, because the block
+ * described above was provoked by their combined volume from one address.
+ *
+ * Running one lookup at a time was never the same thing as running them
+ * slowly: a serial loop still fires back-to-back at whatever rate the network
+ * allows, and a single row can spend ten requests here — five challenges and
+ * five submissions. At this spacing fifty requests take at least seventy-five
+ * seconds, which is no longer "quick succession" by the standard that
+ * produced the block.
+ *
+ * Most of this costs nothing. Within a row the ~4s OCR read already separates
+ * a challenge from its submission by more than this, so the gate only really
+ * waits where nothing else was pacing anything — the challenge that follows a
+ * submission, and the first request of the next row.
+ */
+export const BIGSHARE_MIN_REQUEST_GAP_MS = 1_500;
+
+/**
+ * How long to hold the next Bigshare request, given when the gate says one is
+ * next allowed.
+ *
+ * `now` is a parameter rather than a `Date.now()` call inside, so this stays
+ * testable under Node without fake timers — like everything else in this file.
+ */
+export function bigshareWaitMs(nextAllowedAt: number, now: number): number {
+  return Math.max(0, nextAllowedAt - now);
+}
+
+/**
+ * Reported to the rows a run abandons once it has spent its time budget — see
+ * BIGSHARE_RUN_DEADLINE_MS in index.ts. Deliberately the same register as the
+ * other two messages: the next sweep picks these up, so there is nothing here
+ * for the user to act on.
+ */
+export const BIGSHARE_DEADLINE_MESSAGE =
+  "Bigshare's checks ran out of time this round — the rest will run again automatically.";
+
+/**
+ * Whether a run has spent its Bigshare time budget and should stop starting
+ * new lookups.
+ *
+ * Pacing buys politeness with wall clock, and an edge function's wall clock is
+ * finite — 150s on Supabase's free plan, 400s on paid. Without this, a long
+ * enough Bigshare batch would eventually push an invocation into being killed
+ * mid-flight, losing the rows it had not yet written. With it the overflow
+ * degrades to "not yet" and is retried on the next sweep, exactly the way a
+ * tripped breaker already degrades.
+ */
+export function bigshareRunDeadlineExceeded(deadlineAt: number, now: number): boolean {
+  return now >= deadlineAt;
+}
+
+/**
  * True only for the status worth spending another captcha on.
  *
  * `"CAPTCHA"` is a plain misread: the challenge is single-use, so the fix is
