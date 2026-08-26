@@ -91,8 +91,10 @@ worker outright (`WORKER_RESOURCE_LIMIT`), taking the healthy providers down wit
 > **Expect this to break eventually.** None of these sites publishes a documented IPO API;
 > `sync-ipos` calls the endpoints their own front-ends use. Every attempt is written to
 > `sync_log`, the app shows a staleness banner from it, and **Add IPO manually** always
-> works. Allotment status is deliberately not scraped — registrar sites are captcha-walled,
-> so the app reminds you and links out instead.
+> works. The same applies to allotment status, which `check-allotments` reads from KFintech,
+> Bigshare, and MUFG Intime the same way. Bigshare gates its lookup behind a captcha; that
+> one is solved via an external OCR service, and when it can't be read the check reports
+> "not yet" and retries on the next sweep rather than reporting a wrong result.
 >
 > **On GMP.** Grey market premium is unofficial dealer chatter, not exchange data. SEBI has
 > publicly cautioned retail investors against relying on it, and it is manipulable on

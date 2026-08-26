@@ -50,9 +50,17 @@
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 
 import {
+  BIGSHARE_BLOCKED_MESSAGE,
+  BIGSHARE_CAPTCHA_LENGTH,
+  BIGSHARE_CAPTCHA_UNREAD_MESSAGE,
   bigshareStatusFor,
   bigshareUnavailableMessage,
+  type BigshareCaptchaChallenge,
+  isRetryableCaptchaStatus,
   parseBigshareAllotmentBody,
+  parseCaptchaChallenge,
+  parseOcrAnswer,
+  shouldStopTryingBigshare,
 } from './bigshare.ts';
 import { encryptMufgToken, mufgStatusFor, parseMufgAllotmentBody } from './mufg.ts';
 import {
@@ -72,6 +80,43 @@ const BROWSER_HEADERS = {
 const KFINTECH_QUERY_URL =
   'https://0uz601ms56.execute-api.ap-south-1.amazonaws.com/prod/api/query?type=pan';
 const BIGSHARE_QUERY_URL = 'https://ipo.bigshareonline.com/Data.aspx/FetchIpodetails';
+const BIGSHARE_CAPTCHA_URL = 'https://ipo.bigshareonline.com/Captcha.ashx';
+
+/**
+ * The OCR service that reads Bigshare's captcha. Overridable so it can be
+ * repointed — or pointed at a local instance — without a redeploy.
+ */
+const OCR_URL = Deno.env.get('OCR_URL') ?? 'https://ocr-job.onrender.com/ocr';
+
+/**
+ * How many fresh captchas to try before giving up on one lookup.
+ *
+ * Measured over 12 live challenges on 2026-08-26: **a single attempt succeeds
+ * 42% of the time.** Compounding that:
+ *
+ *   1 attempt  42%   3 attempts  80%
+ *   2 attempts 66%   5 attempts  93%
+ *
+ * Five is the point where the curve flattens — a sixth attempt buys ~3 points
+ * for another ~4s. At 42% the expected cost is ~2.4 attempts (~10s) per row,
+ * not five; the budget only binds on unlucky rows.
+ *
+ * Three would leave one Bigshare lookup in five failing per sweep. The cron
+ * would paper over that by retrying every 15 minutes, but the on-demand
+ * "Check status" button gets one shot, and there the difference between 80%
+ * and 93% is the difference between a button that mostly works and one that
+ * works.
+ */
+const BIGSHARE_CAPTCHA_ATTEMPTS = 5;
+
+/**
+ * The OCR service sleeps when idle (free tier), and a cold start costs
+ * roughly 50s against ~4s warm. A tighter timeout would fail every lookup
+ * that happens to be the first one after a quiet spell — exactly the
+ * situation the 15-minute cron creates.
+ */
+const OCR_TIMEOUT_MS = 60_000;
+
 const MUFG_BASE = 'https://in.mpms.mufg.com/Initial_Offer';
 const MUFG_TOKEN_URL = `${MUFG_BASE}/IPO.aspx/generateToken`;
 const MUFG_QUERY_URL = `${MUFG_BASE}/IPO.aspx/SearchOnPan`;
@@ -187,6 +232,16 @@ type ProviderCheckResult =
   | { outcome: 'not-yet'; message?: string }
   | { outcome: 'resolved'; status: AllotmentOutcome; sharesAllotted: number };
 
+/**
+ * One run's evidence that Bigshare has stopped answering anybody from this
+ * address, so the rest of the run can skip it instead of grinding through a
+ * full captcha budget per row against a wall.
+ *
+ * See BIGSHARE_BLOCK_TRIP_AFTER in bigshare.ts for what the count means and
+ * why an unbroken streak is the only form of it worth acting on.
+ */
+type BigshareCircuit = { consecutiveExhausted: number };
+
 async function checkOneKfintech(row: DueRow): Promise<ProviderCheckResult> {
   const res = await fetch(KFINTECH_QUERY_URL, {
     headers: {
@@ -210,49 +265,149 @@ async function checkOneKfintech(row: DueRow): Promise<ProviderCheckResult> {
 }
 
 /**
+ * Pulls a fresh challenge from Captcha.ashx. See bigshare.ts's header for the
+ * shape and lifetime of what comes back; the short version is that it's
+ * stateless, so no cookie jar is needed here.
+ */
+async function fetchBigshareCaptcha(): Promise<BigshareCaptchaChallenge> {
+  const res = await fetch(BIGSHARE_CAPTCHA_URL, {
+    headers: {
+      ...BROWSER_HEADERS,
+      Referer: 'https://ipo.bigshareonline.com/ipo_status.html',
+      'X-Requested-With': 'XMLHttpRequest',
+    },
+  });
+
+  // 503 is Bigshare shedding load or still warming, per its own page's error
+  // handling — same "back off" meaning as 429, so it's reported the same way.
+  if (res.status === 429 || res.status === 503) {
+    const retryAfter = res.headers.get('Retry-After');
+    const wait = retryAfter ? ` (retry after ${retryAfter}s)` : '';
+    throw new Error(`Bigshare is rate-limiting captcha requests${wait}`);
+  }
+  if (!res.ok) throw new Error(`Bigshare captcha request responded ${res.status}`);
+
+  const challenge = parseCaptchaChallenge(await res.json().catch(() => null));
+  if (!challenge) throw new Error('Bigshare captcha response was not a usable challenge');
+  return challenge;
+}
+
+/**
+ * Reads a captcha image via the OCR service, or returns null if it couldn't.
+ *
+ * Null rather than throwing: an unreadable captcha is an ordinary, expected
+ * outcome that the caller answers by fetching another one. Only a failure
+ * that would repeat identically on the next attempt deserves to abort the
+ * lookup, and none of the cases here — service down, cold-start timeout,
+ * garbled read — can be told apart from bad luck at this level.
+ */
+async function solveBigshareCaptcha(image: string): Promise<string | null> {
+  try {
+    const res = await fetch(OCR_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image,
+        expectedLength: BIGSHARE_CAPTCHA_LENGTH,
+        whitelist: '0123456789',
+        debug: false,
+      }),
+      signal: AbortSignal.timeout(OCR_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    return parseOcrAnswer(await res.json().catch(() => null));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Bigshare's response is always a single object, never an array — it
  * resolves (company, PAN) to one application server-side, so there's no
  * pickMatch-style disambiguation to do here. See bigshare.ts for why
  * bigshareStatusFor never returns PARTIAL.
+ *
+ * Every query needs its own solved captcha, and the OCR read behind it is
+ * only sometimes right, so the whole request is wrapped in a retry loop. Two
+ * things about that loop are deliberate:
+ *
+ *  - Each attempt fetches a *new* challenge. Bigshare's captcha is
+ *    single-use, so re-posting a rejected token could never succeed.
+ *  - The answer is always submitted, never pre-screened on the OCR service's
+ *    own confidence score. Bigshare is the ground truth and asking it costs
+ *    far less than producing another read — see parseOcrAnswer's comment.
  */
-async function checkOneBigshare(row: DueRow): Promise<ProviderCheckResult> {
-  const res = await fetch(BIGSHARE_QUERY_URL, {
-    method: 'POST',
-    headers: {
-      ...BROWSER_HEADERS,
-      'Content-Type': 'application/json; charset=UTF-8',
-      Origin: 'https://ipo.bigshareonline.com',
-      Referer: 'https://ipo.bigshareonline.com/ipo_status.html',
-      'X-Requested-With': 'XMLHttpRequest',
-    },
-    body: JSON.stringify({
-      Applicationno: '',
-      Company: row.companyId,
-      SelectionType: 'PN',
-      PanNo: row.pan,
-      txtcsdl: '',
-      txtDPID: '',
-      txtClId: '',
-      ddlType: '0',
-      lang: 'en',
-      // Required present (even empty) since Bigshare added captcha-gating to
-      // this endpoint — omitting them throws server-side and returns a raw
-      // 500 regardless of company/PAN. See bigshare.ts's file header.
-      CaptchaToken: '',
-      CaptchaAnswer: '',
-      ResultToken: '',
-    }),
-  });
+async function checkOneBigshare(
+  row: DueRow,
+  circuit: BigshareCircuit,
+): Promise<ProviderCheckResult> {
+  // Bigshare has already refused everything this run — see BigshareCircuit.
+  if (shouldStopTryingBigshare(circuit.consecutiveExhausted)) {
+    return { outcome: 'not-yet', message: BIGSHARE_BLOCKED_MESSAGE };
+  }
 
-  if (res.status === 429) throw new Error('Bigshare is rate-limiting allotment checks');
-  if (!res.ok) throw new Error(`Bigshare allotment check responded ${res.status}`);
+  let body: unknown = null;
+  let submitted = false;
 
-  const body = await res.json().catch(() => null);
+  for (let attempt = 1; attempt <= BIGSHARE_CAPTCHA_ATTEMPTS; attempt += 1) {
+    const challenge = await fetchBigshareCaptcha();
+    const answer = await solveBigshareCaptcha(challenge.image);
 
-  // No headless way to solve the captcha this now asks for — tell the caller
-  // to check manually rather than reporting either an error or a false
-  // not-yet-allotted result.
-  const unavailable = bigshareUnavailableMessage(body);
+    // Nothing usable came back from OCR. The challenge is spent either way,
+    // so spend an attempt rather than a request Bigshare would only refuse.
+    if (!answer) continue;
+    submitted = true;
+
+    const res = await fetch(BIGSHARE_QUERY_URL, {
+      method: 'POST',
+      headers: {
+        ...BROWSER_HEADERS,
+        'Content-Type': 'application/json; charset=UTF-8',
+        Origin: 'https://ipo.bigshareonline.com',
+        Referer: 'https://ipo.bigshareonline.com/ipo_status.html',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      body: JSON.stringify({
+        Applicationno: '',
+        Company: row.companyId,
+        SelectionType: 'PN',
+        PanNo: row.pan,
+        txtcsdl: '',
+        txtDPID: '',
+        txtClId: '',
+        ddlType: '0',
+        lang: 'en',
+        CaptchaToken: challenge.token,
+        CaptchaAnswer: answer,
+        // Only ever used to re-read a record a captcha was already solved
+        // for, which is never what this is doing. See bigshare.ts's header.
+        ResultToken: '',
+      }),
+    });
+
+    if (res.status === 429) throw new Error('Bigshare is rate-limiting allotment checks');
+    if (!res.ok) throw new Error(`Bigshare allotment check responded ${res.status}`);
+
+    body = await res.json().catch(() => null);
+
+    const status = (body as { d?: { Status?: unknown } } | null)?.d?.Status;
+    if (!isRetryableCaptchaStatus(status)) break;
+  }
+
+  // Null exactly when Bigshare ran the lookup and answered — which is also
+  // the only proof that this address isn't being refused wholesale. Anything
+  // else (a spent budget, RATELIMIT, WARMING) is a lookup that produced
+  // nothing, and feeds the breaker.
+  const unavailable = submitted
+    ? bigshareUnavailableMessage(body)
+    : BIGSHARE_CAPTCHA_UNREAD_MESSAGE;
+  circuit.consecutiveExhausted = unavailable ? circuit.consecutiveExhausted + 1 : 0;
+
+  // Every one of these is transient and retried on the next sweep, so they
+  // report "not yet" with an explanation rather than an error or a false
+  // not-allotted result. `submitted` being false means OCR never produced
+  // anything worth sending, so no query was ever made — without a message
+  // that would look indistinguishable from a genuine not-out-yet result.
   if (unavailable) return { outcome: 'not-yet', message: unavailable };
 
   const match = parseBigshareAllotmentBody(body);
@@ -316,13 +471,17 @@ async function checkOneMufg(row: DueRow): Promise<ProviderCheckResult> {
   return { outcome: 'resolved', status, sharesAllotted: match.sharesAllotted };
 }
 
-async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResult> {
+async function checkOne(
+  client: SupabaseClient,
+  row: DueRow,
+  circuit: BigshareCircuit,
+): Promise<CheckResult> {
   try {
     const result =
       row.provider === 'KFINTECH'
         ? await checkOneKfintech(row)
         : row.provider === 'BIGSHARE'
-          ? await checkOneBigshare(row)
+          ? await checkOneBigshare(row, circuit)
           : await checkOneMufg(row);
 
     if (result.outcome === 'not-yet') {
@@ -356,6 +515,46 @@ async function checkOne(client: SupabaseClient, row: DueRow): Promise<CheckResul
       message: e instanceof Error ? e.message : String(e),
     };
   }
+}
+
+/**
+ * Runs a batch of checks, returned in the same order as `rows`.
+ *
+ * KFintech and MUFG are one cheap request each and still go out together.
+ * Bigshare no longer can: every row needs its own single-use captcha, and
+ * firing N of those at Captcha.ashx simultaneously is the fastest way to be
+ * rate-limited — which costs far more than the parallelism saves, since a
+ * throttled row degrades to "not yet" and waits a full 15 minutes for the
+ * next sweep. So Bigshare rows go one at a time.
+ *
+ * Both call sites walk the returned array positionally (the on-demand
+ * response body, and sendAllotmentPushes), so the two groups are stitched
+ * back into the caller's original order rather than concatenated.
+ */
+async function runChecks(client: SupabaseClient, rows: DueRow[]): Promise<CheckResult[]> {
+  const results = new Array<CheckResult>(rows.length);
+
+  // Fresh per run. Module scope would persist across invocations in a warm
+  // isolate, so one blocked sweep could suppress Bigshare for later ones that
+  // would have worked.
+  const circuit: BigshareCircuit = { consecutiveExhausted: 0 };
+
+  const parallel: number[] = [];
+  const serial: number[] = [];
+  rows.forEach((row, i) => (row.provider === 'BIGSHARE' ? serial : parallel).push(i));
+
+  const parallelResults = await Promise.all(
+    parallel.map((i) => checkOne(client, rows[i], circuit)),
+  );
+  parallel.forEach((i, n) => (results[i] = parallelResults[n]));
+
+  // Serial also means the breaker actually works: each Bigshare row sees what
+  // the previous one learned, which it could not if they all ran at once.
+  for (const i of serial) {
+    results[i] = await checkOne(client, rows[i], circuit);
+  }
+
+  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -555,9 +754,7 @@ async function handleOnDemand(
 
   await touchCheckedAt(serviceClient, rejected);
 
-  const checked = await Promise.all(
-    checkable.map((row) => checkOne(serviceClient, row)),
-  );
+  const checked = await runChecks(serviceClient, checkable);
   for (const c of checked) {
     results.push({
       id: c.row.id,
@@ -602,7 +799,7 @@ Deno.serve(async (req) => {
     const candidates = await loadCandidates(client);
     const due = dueRows(candidates, nowIso);
 
-    const results = await Promise.all(due.map((row) => checkOne(client, row)));
+    const results = await runChecks(client, due);
     checked = results.length;
     for (const result of results) {
       if (result.outcome === 'resolved') resolved += 1;

@@ -5,10 +5,16 @@
  */
 import {
   type AllotmentOutcome,
+  BIGSHARE_BLOCK_TRIP_AFTER,
+  BIGSHARE_CAPTCHA_UNREAD_MESSAGE,
   bigshareStatusFor,
   bigshareUnavailableMessage,
   type BigshareAllotmentMatch,
+  isRetryableCaptchaStatus,
   parseBigshareAllotmentBody,
+  parseCaptchaChallenge,
+  parseOcrAnswer,
+  shouldStopTryingBigshare,
 } from './bigshare.ts';
 
 describe('parseBigshareAllotmentBody', () => {
@@ -71,7 +77,7 @@ describe('bigshareUnavailableMessage', () => {
     expect(bigshareUnavailableMessage(null)).toBeNull();
   });
 
-  it('surfaces the live captcha-required response as a message', () => {
+  it('reports an exhausted captcha budget as transient, not as manual work', () => {
     const body = {
       d: {
         Status: 'CAPTCHA',
@@ -79,16 +85,141 @@ describe('bigshareUnavailableMessage', () => {
         DPID: '',
       },
     };
-    expect(bigshareUnavailableMessage(body)).toBe(
-      "Bigshare couldn't complete this check automatically (Invalid captcha code. Please try again.) — check manually at ipo.bigshareonline.com",
-    );
+    // Bigshare's own wording is dropped here: by the time this status
+    // survives the retry loop, "please try again" is what already happened.
+    expect(bigshareUnavailableMessage(body)).toBe(BIGSHARE_CAPTCHA_UNREAD_MESSAGE);
   });
 
   it('falls back to the raw Status when Message is absent', () => {
     const body = { d: { Status: 'RATELIMIT' } };
     expect(bigshareUnavailableMessage(body)).toBe(
-      "Bigshare couldn't complete this check automatically (RATELIMIT) — check manually at ipo.bigshareonline.com",
+      "Bigshare couldn't complete this check right now (RATELIMIT) — it will run again automatically.",
     );
+  });
+
+  it('passes through the server wording for a refusal that is not a captcha', () => {
+    const body = { d: { Status: 'WARMING', Message: 'Service is starting up.' } };
+    expect(bigshareUnavailableMessage(body)).toBe(
+      "Bigshare couldn't complete this check right now (Service is starting up.) — it will run again automatically.",
+    );
+  });
+});
+
+describe('shouldStopTryingBigshare', () => {
+  it('keeps going while failures could still be ordinary bad luck', () => {
+    expect(shouldStopTryingBigshare(0)).toBe(false);
+    expect(shouldStopTryingBigshare(1)).toBe(false);
+  });
+
+  it('stops once a blanket refusal is the better explanation', () => {
+    // Two lookups exhausting a 5-attempt budget back to back is ~0.4% likely
+    // from misreads alone — see BIGSHARE_BLOCK_TRIP_AFTER.
+    expect(shouldStopTryingBigshare(BIGSHARE_BLOCK_TRIP_AFTER)).toBe(true);
+    expect(shouldStopTryingBigshare(BIGSHARE_BLOCK_TRIP_AFTER + 3)).toBe(true);
+  });
+});
+
+describe('isRetryableCaptchaStatus', () => {
+  it('is true for a rejected captcha — the one case a fresh challenge fixes', () => {
+    expect(isRetryableCaptchaStatus('CAPTCHA')).toBe(true);
+  });
+
+  it('is false for the back-off statuses, which more attempts would only worsen', () => {
+    expect(isRetryableCaptchaStatus('RATELIMIT')).toBe(false);
+    expect(isRetryableCaptchaStatus('WARMING')).toBe(false);
+  });
+
+  it('is false for an answered query, and for a missing status', () => {
+    expect(isRetryableCaptchaStatus('OK')).toBe(false);
+    expect(isRetryableCaptchaStatus('NOTFOUND')).toBe(false);
+    expect(isRetryableCaptchaStatus(undefined)).toBe(false);
+    expect(isRetryableCaptchaStatus(null)).toBe(false);
+  });
+});
+
+/**
+ * Fixtures captured live from https://ipo.bigshareonline.com/Captcha.ashx on
+ * 2026-08-26. The real image is a ~5KB base64 data URI; it's truncated here
+ * because only the prefix is ever inspected.
+ */
+describe('parseCaptchaChallenge', () => {
+  const TOKEN = '1787723548.ogD3hFPnHidym76n.2z-nyKcHiRdGJh03IxMsuJ0k6sjQnoG2LOeXYscLKao';
+  const IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAAAyCAIAAACWMwO2';
+
+  it('maps the live challenge shape', () => {
+    expect(parseCaptchaChallenge({ token: TOKEN, image: IMAGE })).toEqual({
+      token: TOKEN,
+      image: IMAGE,
+    });
+  });
+
+  it('accepts the capitalised keys the page also guards against', () => {
+    expect(parseCaptchaChallenge({ Token: TOKEN, Image: IMAGE })).toEqual({
+      token: TOKEN,
+      image: IMAGE,
+    });
+  });
+
+  it('is null when either half of the challenge is missing', () => {
+    expect(parseCaptchaChallenge({ image: IMAGE })).toBeNull();
+    expect(parseCaptchaChallenge({ token: TOKEN })).toBeNull();
+    expect(parseCaptchaChallenge({ token: '', image: IMAGE })).toBeNull();
+    expect(parseCaptchaChallenge({ token: TOKEN, image: '' })).toBeNull();
+  });
+
+  it('is null when the image is not a base64 data URI', () => {
+    // A relative URL would sail through a presence check and fail later, at
+    // the OCR service, a wasted round-trip after this point.
+    expect(parseCaptchaChallenge({ token: TOKEN, image: '/Captcha.ashx?id=1' })).toBeNull();
+    expect(parseCaptchaChallenge({ token: TOKEN, image: 'data:image/png,notbase64' })).toBeNull();
+  });
+
+  it('is null on a malformed or empty body', () => {
+    expect(parseCaptchaChallenge({})).toBeNull();
+    expect(parseCaptchaChallenge(null)).toBeNull();
+    expect(parseCaptchaChallenge({ token: 1, image: 2 })).toBeNull();
+  });
+});
+
+/** Fixture captured live from the OCR service on 2026-08-26. */
+describe('parseOcrAnswer', () => {
+  it('takes the text from the live response shape', () => {
+    const body = {
+      text: '282947',
+      confidence: 88,
+      agreement: 0.5,
+      usedVariants: 4,
+      ms: 3733,
+      perChar: [{ char: '2', confidence: 96, margin: 1, alternatives: [] }],
+    };
+    expect(parseOcrAnswer(body)).toBe('282947');
+  });
+
+  it('ignores confidence entirely — Bigshare is the only judge that counts', () => {
+    // Live-measured: a read at 93 was rejected and one at 68 accepted, so a
+    // confidence floor would cost accepted answers and buy nothing. Both of
+    // these get submitted.
+    expect(parseOcrAnswer({ text: '899528', confidence: 60, agreement: 0 })).toBe('899528');
+    expect(parseOcrAnswer({ text: '825399', confidence: 68, agreement: 0.25 })).toBe('825399');
+  });
+
+  it('rejects the short read that is a third of live OCR output', () => {
+    // The dominant real failure mode: five digits at confidence 0. Catching
+    // it here spends a retry instead of a request Bigshare would refuse.
+    expect(parseOcrAnswer({ text: '96832', confidence: 0, agreement: 0.75 })).toBeNull();
+    expect(parseOcrAnswer({ text: '39898', confidence: 0, agreement: 0.25 })).toBeNull();
+  });
+
+  it('is null for any other read that cannot possibly be right', () => {
+    expect(parseOcrAnswer({ text: '2829471' })).toBeNull();
+    expect(parseOcrAnswer({ text: '28294S' })).toBeNull();
+  });
+
+  it('is null when there is no text at all', () => {
+    expect(parseOcrAnswer({ confidence: 88 })).toBeNull();
+    expect(parseOcrAnswer({ text: 282947 })).toBeNull();
+    expect(parseOcrAnswer({})).toBeNull();
+    expect(parseOcrAnswer(null)).toBeNull();
   });
 });
 
