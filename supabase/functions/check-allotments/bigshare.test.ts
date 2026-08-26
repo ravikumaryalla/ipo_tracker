@@ -7,8 +7,11 @@ import {
   type AllotmentOutcome,
   BIGSHARE_BLOCK_TRIP_AFTER,
   BIGSHARE_CAPTCHA_UNREAD_MESSAGE,
+  BIGSHARE_MIN_REQUEST_GAP_MS,
+  bigshareRunDeadlineExceeded,
   bigshareStatusFor,
   bigshareUnavailableMessage,
+  bigshareWaitMs,
   type BigshareAllotmentMatch,
   isRetryableCaptchaStatus,
   parseBigshareAllotmentBody,
@@ -116,6 +119,39 @@ describe('shouldStopTryingBigshare', () => {
     // from misreads alone — see BIGSHARE_BLOCK_TRIP_AFTER.
     expect(shouldStopTryingBigshare(BIGSHARE_BLOCK_TRIP_AFTER)).toBe(true);
     expect(shouldStopTryingBigshare(BIGSHARE_BLOCK_TRIP_AFTER + 3)).toBe(true);
+  });
+});
+
+describe('bigshareWaitMs', () => {
+  it('does not hold a request the gate has already cleared', () => {
+    expect(bigshareWaitMs(1_000, 1_000)).toBe(0);
+    expect(bigshareWaitMs(1_000, 5_000)).toBe(0);
+  });
+
+  it('holds the remainder of the gap when the gate is still closed', () => {
+    expect(bigshareWaitMs(5_000, 4_000)).toBe(1_000);
+    expect(bigshareWaitMs(5_000, 3_500)).toBe(1_500);
+  });
+
+  it('never returns a negative wait, which would be passed to setTimeout', () => {
+    expect(bigshareWaitMs(0, 9_999_999)).toBe(0);
+  });
+
+  it('spaces fifty requests far enough apart to clear "quick succession"', () => {
+    // The block in bigshare.ts's header was provoked by ~50 rapid requests.
+    expect(BIGSHARE_MIN_REQUEST_GAP_MS * 50).toBeGreaterThanOrEqual(75_000);
+  });
+});
+
+describe('bigshareRunDeadlineExceeded', () => {
+  it('keeps starting lookups while the run still has time', () => {
+    expect(bigshareRunDeadlineExceeded(110_000, 0)).toBe(false);
+    expect(bigshareRunDeadlineExceeded(110_000, 109_999)).toBe(false);
+  });
+
+  it('stops once the budget is spent, so the invocation can finish writing', () => {
+    expect(bigshareRunDeadlineExceeded(110_000, 110_000)).toBe(true);
+    expect(bigshareRunDeadlineExceeded(110_000, 200_000)).toBe(true);
   });
 });
 
