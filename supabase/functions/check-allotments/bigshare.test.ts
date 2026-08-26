@@ -289,4 +289,33 @@ describe('bigshareStatusFor', () => {
     expect(bigshareStatusFor('', 70).status).toBe('NOT_ALLOTTED');
     expect(bigshareStatusFor('UNKNOWN', 70).status).toBe('NOT_ALLOTTED');
   });
+
+  // Captured live against SUNSHINE PICTURES LIMITED on 2026-08-26 — the first
+  // real allotted record this leg has seen, and the one that showed ALLOTED
+  // carries a share count rather than a status word.
+  it('reads the confirmed live full allotment as a count, not as unrecognised text', () => {
+    expect(bigshareStatusFor('41', 41)).toEqual({ status: 'ALLOTTED', sharesAllotted: 41 });
+  });
+
+  it('reports a short allotment as PARTIAL, the way parse.ts and mufg.ts do', () => {
+    expect(bigshareStatusFor('20', 41)).toEqual({ status: 'PARTIAL', sharesAllotted: 20 });
+  });
+
+  it('is NOT_ALLOTTED for an explicit zero count', () => {
+    expect(bigshareStatusFor('0', 41)).toEqual({ status: 'NOT_ALLOTTED', sharesAllotted: 0 });
+  });
+
+  it('survives digit grouping, which would otherwise parse as not allotted', () => {
+    expect(bigshareStatusFor('1,041', 1041)).toEqual({
+      status: 'ALLOTTED',
+      sharesAllotted: 1041,
+    });
+  });
+
+  it('still honours the text sentinel, which is never numeric', () => {
+    expect(bigshareStatusFor('NON-ALLOTTE', 41)).toEqual({
+      status: 'NOT_ALLOTTED',
+      sharesAllotted: 0,
+    });
+  });
 });

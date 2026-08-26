@@ -7,6 +7,9 @@
  * Confirmed live against https://ipo.bigshareonline.com/Data.aspx/FetchIpodetails
  * on 2026-08-19: a match returns
  * `{"d":{"APPLICATION_NO":"...","DPID":"...","Name":"...","APPLIED":"70","ALLOTED":"NON-ALLOTTE",...}}`
+ * (an *allotted* record carries the allotted share count in that same field
+ * instead — `"ALLOTED":"41"` against `"APPLIED":"41"`, confirmed live on
+ * 2026-08-26; see bigshareStatusFor)
  * (unlike KFintech, always a single object, never an array — Bigshare
  * resolves the (company, PAN) pair to one application server-side, so
  * there's no pickMatch-style disambiguation needed here), and a non-match
@@ -344,30 +347,52 @@ export function parseOcrAnswer(
 }
 
 /**
- * Classifies Bigshare's free-text ALLOTED field into a status, and
- * approximates a share count from it.
+ * Classifies Bigshare's ALLOTED field into a status and a share count.
  *
- * The only live sample seen so far is the non-allotted case
- * (`"NON-ALLOTTE"`, apparently column-width-truncated from "NON-ALLOTTED") —
- * the allotted spelling is inferred (`"ALLOT"` without a `"NON"`/`"NOT"`
- * prefix), not confirmed, and should be re-checked the first time a real
- * allotted result is available.
+ * The field is not free text, as this function first assumed — it is two
+ * different things depending on the outcome. Both are now confirmed live
+ * against SUNSHINE PICTURES LIMITED (company 9044) on 2026-08-26:
  *
- * Unlike KFintech's numeric App_Shares/All_Shares pair, this endpoint gives
- * no allotted-share count at all — just this status text. So a genuine
- * partial allotment can't be distinguished from a full one with the data
- * available here: PARTIAL is never returned by this function. Allotted
- * degrades to "full applied count", not a guessed fraction — reporting a
- * confident wrong number is worse than reporting a knowingly approximate
- * one, but a fabricated partial count would be worse still.
+ *  - Not allotted: the text sentinel `"NON-ALLOTTE"`, apparently
+ *    column-width-truncated from "NON-ALLOTTED".
+ *  - Allotted: the **allotted share count** as a bare number — `"41"`
+ *    against `APPLIED: "41"`.
+ *
+ * The earlier reading (that an allotted result would spell out some word
+ * containing "ALLOT", and that Bigshare gave no count at all) was inferred
+ * from the non-allotted sample alone, and was wrong on both points. It made
+ * this function answer NOT_ALLOTTED with zero shares for a real, full
+ * allotment — the worst possible failure here, since a definitive status
+ * drops the row out of the sweep, so nothing ever corrects it.
+ *
+ * Having a real count also means a partial allotment is now distinguishable,
+ * using the same `sharesAllotted < applied` rule as parse.ts and mufg.ts,
+ * rather than being impossible as the old comment claimed.
+ *
+ * The word-matching branch is kept below as a fallback: it costs nothing, and
+ * it is the only thing standing between an unrecognised future spelling and a
+ * silent "not allotted".
  */
 export function bigshareStatusFor(
   allotedText: string,
   sharesApplied: number,
 ): { status: AllotmentOutcome; sharesAllotted: number } {
-  const text = allotedText.toUpperCase();
-  const notAllotted = text.includes('NON') || text.includes('NOT');
-  const allotted = !notAllotted && text.includes('ALLOT');
-  if (allotted) return { status: 'ALLOTTED', sharesAllotted: sharesApplied };
+  const text = allotedText.trim();
+
+  // Commas are stripped defensively: no live sample has carried one, but
+  // Indian digit grouping would render a large allotment as "1,041", and
+  // Number() answers NaN to that — which would read as "not allotted".
+  const count = text === '' ? Number.NaN : Number(text.replace(/,/g, ''));
+  if (Number.isFinite(count) && count >= 0) {
+    if (count === 0) return { status: 'NOT_ALLOTTED', sharesAllotted: 0 };
+    const status: AllotmentOutcome = count < sharesApplied ? 'PARTIAL' : 'ALLOTTED';
+    return { status, sharesAllotted: count };
+  }
+
+  const upper = text.toUpperCase();
+  if (upper.includes('NON') || upper.includes('NOT')) {
+    return { status: 'NOT_ALLOTTED', sharesAllotted: 0 };
+  }
+  if (upper.includes('ALLOT')) return { status: 'ALLOTTED', sharesAllotted: sharesApplied };
   return { status: 'NOT_ALLOTTED', sharesAllotted: 0 };
 }

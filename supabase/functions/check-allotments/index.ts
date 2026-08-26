@@ -386,8 +386,8 @@ async function solveBigshareCaptcha(image: string): Promise<string | null> {
 /**
  * Bigshare's response is always a single object, never an array — it
  * resolves (company, PAN) to one application server-side, so there's no
- * pickMatch-style disambiguation to do here. See bigshare.ts for why
- * bigshareStatusFor never returns PARTIAL.
+ * pickMatch-style disambiguation to do here. See bigshareStatusFor for how
+ * its ALLOTED field encodes an allotted count rather than a status word.
  *
  * Every query needs its own solved captcha, and the OCR read behind it is
  * only sometimes right, so the whole request is wrapped in a retry loop. Two
