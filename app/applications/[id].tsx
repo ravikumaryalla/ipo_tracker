@@ -8,12 +8,12 @@ import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Badge, Button, Card, ErrorText, Field, Loading, Screen } from '../../components/ui';
 import { colors, formatInr, radius, spacing, type } from '../../constants/theme';
-import { checkAllotment } from '../../lib/db/allotment';
 import {
   deleteApplication,
   listApplications,
   updateApplicationOutcome,
 } from '../../lib/db/applications';
+import { formatDateTime, STATUS_LABEL, STATUS_TONE } from '../../lib/status';
 import type { ApplicationStatus } from '../../lib/types';
 
 const OUTCOMES: { key: ApplicationStatus; label: string }[] = [
@@ -46,52 +46,6 @@ export default function ApplicationDetail() {
   const [sharesAllotted, setSharesAllotted] = useState('');
   const [sellPrice, setSellPrice] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [checkError, setCheckError] = useState<string | null>(null);
-
-  const checkNow = useMutation({
-    mutationFn: () =>
-      checkAllotment(
-        id!,
-        {
-          kfintech_company_id: application?.kfintech_company_id ?? null,
-          bigshare_company_id: application?.bigshare_company_id ?? null,
-          mufg_company_id: application?.mufg_company_id ?? null,
-          registrar: application?.registrar ?? null,
-        },
-        application!.ipo_id,
-      ),
-    onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ['applications'] });
-
-      const { title, message } =
-        result.outcome === 'resolved'
-          ? result.status === 'ALLOTTED'
-            ? {
-                title: 'Allotted',
-                message: `You got ${result.shares_allotted} of ${result.shares_applied} shares.`,
-              }
-            : result.status === 'PARTIAL'
-              ? {
-                  title: 'Partial allotment',
-                  message: `${result.shares_allotted} of ${result.shares_applied} shares allotted.`,
-                }
-              : { title: 'Not allotted', message: 'No shares this time.' }
-          : result.outcome === 'not-yet'
-            ? {
-                title: result.message ? 'Could not check automatically' : 'Not announced yet',
-                message: result.message ?? 'Results were not announced.',
-              }
-            : { title: 'Could not check', message: result.message ?? 'Please try again.' };
-      Alert.alert(title, message);
-    },
-    onError: (e) => {
-      // Only reached on a genuine failure to even reach the check service —
-      // every other outcome (no match, no PAN, not announced, resolved)
-      // comes back via onSuccess now, since check-allotments reports it
-      // rather than throwing.
-      setCheckError(e instanceof Error ? e.message : 'Could not check allotment.');
-    },
-  });
 
   const save = useMutation({
     mutationFn: async () => {
@@ -149,11 +103,14 @@ export default function ApplicationDetail() {
 
   return (
     <Screen>
-      <View style={{ marginBottom: spacing.lg }}>
-        <Text style={styles.title}>{application.company_name}</Text>
-        <Text style={styles.subtitle}>
-          {application.account_nickname} · {application.category}
-        </Text>
+      <View style={styles.head}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.title}>{application.company_name}</Text>
+          <Text style={styles.subtitle}>
+            {application.account_nickname} · {application.category}
+          </Text>
+        </View>
+        <Badge label={STATUS_LABEL[application.status]} tone={STATUS_TONE[application.status]} />
       </View>
 
       <ErrorText>{error}</ErrorText>
@@ -171,24 +128,13 @@ export default function ApplicationDetail() {
           <Text style={[styles.label, { marginBottom: spacing.md }]}>
             Check your allotment status directly instead of visiting the registrar's site.
           </Text>
-          <ErrorText>{checkError}</ErrorText>
           <Button
             title="Check allotment now"
-            onPress={() => {
-              setCheckError(null);
-              checkNow.mutate();
-            }}
-            loading={checkNow.isPending}
+            onPress={() => router.push(`/allotment/${application.ipo_id}`)}
           />
           {application.allotment_checked_at && (
             <Text style={[styles.label, { marginTop: spacing.md }]}>
-              Last checked{' '}
-              {new Date(application.allotment_checked_at).toLocaleString('en-IN', {
-                day: 'numeric',
-                month: 'short',
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
+              Last checked {formatDateTime(application.allotment_checked_at)}
             </Text>
           )}
         </Card>
@@ -237,7 +183,7 @@ export default function ApplicationDetail() {
         </View>
 
         {(current === 'ALLOTTED' || current === 'PARTIAL') && (
-          <View style={{ marginTop: spacing.lg }}>
+          <>
             <Field
               label="Shares allotted"
               value={sharesAllotted}
@@ -253,7 +199,7 @@ export default function ApplicationDetail() {
               keyboardType="decimal-pad"
               hint="Fill this in once you have sold, to move the P&L from unrealised to realised."
             />
-          </View>
+          </>
         )}
 
         <Button
@@ -266,21 +212,29 @@ export default function ApplicationDetail() {
         />
       </Card>
 
-      <Button
-        title="Delete this application"
-        variant="danger"
-        onPress={() =>
-          Alert.alert('Delete this application?', 'This cannot be undone.', [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Delete', style: 'destructive', onPress: () => remove.mutate() },
-          ])
-        }
-      />
+      <View style={{ marginTop: spacing.lg }}>
+        <Button
+          title="Delete this application"
+          variant="danger"
+          onPress={() =>
+            Alert.alert('Delete this application?', 'This cannot be undone.', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Delete', style: 'destructive', onPress: () => remove.mutate() },
+            ])
+          }
+        />
+      </View>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  head: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.md,
+    marginBottom: spacing.lg,
+  },
   title: { ...type.title, color: colors.text },
   subtitle: { ...type.body, color: colors.textMuted, marginTop: 2 },
   section: { ...type.heading, color: colors.text, marginBottom: spacing.md },
@@ -294,7 +248,7 @@ const styles = StyleSheet.create({
   },
   label: { ...type.body, color: colors.textMuted, fontSize: 14 },
   value: { ...type.bodyStrong, color: colors.text, fontSize: 14 },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.lg },
   chip: {
     backgroundColor: colors.surfaceAlt,
     borderRadius: radius.pill,

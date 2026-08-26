@@ -125,31 +125,6 @@ export type RegistrarLookup = {
   registrar: string | null;
 };
 
-export async function checkAllotment(
-  applicationId: string,
-  ipo: RegistrarLookup,
-  ipoId: string,
-): Promise<OnDemandCheckResult> {
-  let resolved = resolveRegistrarId(ipo);
-  if (!resolved) {
-    const provider = providerFromRegistrarName(ipo.registrar);
-    if (provider) resolved = await resolveRegistrarMatch(ipoId, provider);
-  }
-  if (!resolved) {
-    // Record the attempt so "Last checked" moves even though this didn't
-    // resolve — see the matching comment in checkAllotmentsForIpo.
-    await touchAllotmentChecked([applicationId]);
-    return {
-      id: applicationId,
-      outcome: 'no-match',
-      message: 'allotment not released yet',
-    };
-  }
-
-  const [result] = await invokeCheck([applicationId]);
-  return result;
-}
-
 export type BulkAllotmentCheck =
   | { matched: false; message: string }
   | { matched: true; results: OnDemandCheckResult[] };

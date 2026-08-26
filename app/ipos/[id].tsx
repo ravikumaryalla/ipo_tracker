@@ -1,42 +1,13 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
 
-import {
-  AllotmentCheckResults,
-  type AllotmentCheckResultTone,
-  Badge,
-  Banner,
-  Button,
-  Card,
-  Loading,
-  Screen,
-} from '../../components/ui';
+import { Badge, Button, Card, Loading, Screen } from '../../components/ui';
 import { colors, formatInr, spacing, type } from '../../constants/theme';
-import {
-  checkAllotmentsForIpo,
-  type BulkAllotmentCheck,
-  type OnDemandCheckResult,
-} from '../../lib/db/allotment';
 import { getIpo, gmpHistory, gmpIsStale, gmpTrend, latestGmp } from '../../lib/db/ipos';
 import { listApplications } from '../../lib/db/applications';
-
-function outcomeLabel(r: OnDemandCheckResult): string {
-  if (r.outcome === 'resolved') {
-    if (r.status === 'ALLOTTED') return `Allotted, ${r.shares_allotted} of ${r.shares_applied} shares`;
-    if (r.status === 'PARTIAL') return `Partial, ${r.shares_allotted} of ${r.shares_applied} shares`;
-    return 'Not allotted';
-  }
-  if (r.outcome === 'not-yet') return r.message ?? 'Results were not announced';
-  return r.message ?? 'Could not check.';
-}
-
-function outcomeTone(r: OnDemandCheckResult): AllotmentCheckResultTone {
-  if (r.outcome === 'resolved') return r.status === 'ALLOTTED' || r.status === 'PARTIAL' ? 'success' : 'neutral';
-  if (r.outcome === 'not-yet') return r.message ? 'warning' : 'neutral';
-  return 'warning';
-}
+import { formatDateTime, STATUS_LABEL } from '../../lib/status';
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -50,14 +21,6 @@ function Row({ label, value }: { label: string; value: string }) {
 const formatDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
 
-const formatDateTime = (iso: string) =>
-  new Date(iso).toLocaleString('en-IN', {
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-
 const TREND_GLYPH = { up: '▲', down: '▼', flat: '–', unknown: '' } as const;
 const TREND_COLOR = {
   up: colors.success,
@@ -69,8 +32,6 @@ const TREND_COLOR = {
 export default function IpoDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const queryClient = useQueryClient();
-  const [checkResult, setCheckResult] = useState<BulkAllotmentCheck | null>(null);
 
   const ipo = useQuery({ queryKey: ['ipo', id], queryFn: () => getIpo(id!), enabled: Boolean(id) });
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
@@ -78,30 +39,6 @@ export default function IpoDetail() {
     queryKey: ['gmp', id],
     queryFn: () => gmpHistory(id!),
     enabled: Boolean(id),
-  });
-
-  const check = useMutation({
-    mutationFn: (ids: string[]) =>
-      checkAllotmentsForIpo(id!, ids, {
-        kfintech_company_id: ipo.data?.kfintech_company_id ?? null,
-        bigshare_company_id: ipo.data?.bigshare_company_id ?? null,
-        mufg_company_id: ipo.data?.mufg_company_id ?? null,
-        registrar: ipo.data?.registrar ?? null,
-      }),
-    onSuccess: async (outcome) => {
-      // Unconditional — the unmatched path stamps allotment_checked_at too, so
-      // gating on `matched` left "Last checked" a tap behind. Same fix as the
-      // applications tab.
-      await queryClient.invalidateQueries({ queryKey: ['applications'] });
-      setCheckResult(outcome);
-    },
-    onError: (e) => {
-      // Only reached on a genuine failure to even reach the check service —
-      // a real "not matched" result comes back via onSuccess, not thrown,
-      // so nothing was persisted here and there's nothing to refetch.
-      const message = e instanceof Error ? e.message : 'Could not check status.';
-      setCheckResult({ matched: false, message });
-    },
   });
 
   if (ipo.isLoading) return <Loading />;
@@ -198,7 +135,11 @@ export default function IpoDetail() {
             <Row
               key={a.id}
               label={`${a.account_nickname} · ${a.category}`}
-              value={`${a.lots} lot(s) · ${a.status}`}
+              value={
+                a.shares_allotted > 0
+                  ? `${a.lots} lot(s) · ${a.shares_allotted} shares`
+                  : `${a.lots} lot(s) · ${STATUS_LABEL[a.status]}`
+              }
             />
           ))}
 
@@ -207,34 +148,12 @@ export default function IpoDetail() {
               <Button
                 title="Check status"
                 variant="secondary"
-                onPress={() => {
-                  setCheckResult(null);
-                  check.mutate(eligible.map((a) => a.id));
-                }}
-                loading={check.isPending}
+                onPress={() => router.push(`/allotment/${id}`)}
               />
               {lastChecked && (
                 <Text style={[styles.label, { marginTop: spacing.sm }]}>
                   Last checked {formatDateTime(lastChecked)}
                 </Text>
-              )}
-              {checkResult && !checkResult.matched && (
-                <Banner tone="warning">{checkResult.message}</Banner>
-              )}
-              {checkResult && checkResult.matched && (
-                <View style={{ marginTop: spacing.md }}>
-                  <AllotmentCheckResults
-                    results={checkResult.results.map((r) => {
-                      const nickname = mine.find((a) => a.id === r.id)?.account_nickname ?? r.id;
-                      return {
-                        id: r.id,
-                        label: nickname,
-                        message: outcomeLabel(r),
-                        tone: outcomeTone(r),
-                      };
-                    })}
-                  />
-                </View>
               )}
             </View>
           )}

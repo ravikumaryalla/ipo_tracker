@@ -54,8 +54,21 @@ const persister = createAsyncStoragePersister({
  */
 const PLAINTEXT_QUERY_MARKER = 'decrypted';
 
+/**
+ * A registrar check answers "what is the allotment right now". Rehydrating a
+ * week-old one on cold start would present it as this morning's answer, so the
+ * result screen re-checks instead of reading a stale cache.
+ *
+ * Deliberately a separate marker from PLAINTEXT_QUERY_MARKER above: that one is
+ * a security rule and must not be widened by accident, this one is only about
+ * freshness.
+ */
+const STALE_ON_DISK_QUERY_MARKER = 'allotment-check';
+
 function isPersistable(queryKey: readonly unknown[]): boolean {
-  return !queryKey.some((part) => part === PLAINTEXT_QUERY_MARKER);
+  return !queryKey.some(
+    (part) => part === PLAINTEXT_QUERY_MARKER || part === STALE_ON_DISK_QUERY_MARKER,
+  );
 }
 
 function RouteGate({ children }: { children: React.ReactNode }) {
@@ -229,6 +242,7 @@ export default function RootLayout() {
               <Stack.Screen name="applications/new" options={{ title: 'New application' }} />
               <Stack.Screen name="applications/[id]" options={{ title: 'Application' }} />
               <Stack.Screen name="applications/bulk-update" options={{ title: 'Update all' }} />
+              <Stack.Screen name="allotment/[ipoId]" options={{ title: 'Allotment result' }} />
               <Stack.Screen
                 name="settings/change-pin"
                 options={{ title: 'Change PIN' }}

@@ -1,16 +1,13 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import {
-  AllotmentCheckResults,
-  type AllotmentCheckResultTone,
   AppHeader,
   Avatar,
   Badge,
-  Banner,
   Button,
   Card,
   EmptyState,
@@ -22,32 +19,15 @@ import {
   Segmented,
 } from '../../components/ui';
 import { colors, formatInr, motion, radius, spacing, type } from '../../constants/theme';
-import {
-  checkAllotmentsForIpo,
-  type BulkAllotmentCheck,
-  type OnDemandCheckResult,
-} from '../../lib/db/allotment';
 import { listApplications } from '../../lib/db/applications';
+import {
+  formatDateTime,
+  STATUS_ACCENT,
+  STATUS_LABEL,
+  STATUS_TONE,
+  summariseCheck,
+} from '../../lib/status';
 import type { ApplicationPnl, ApplicationStatus } from '../../lib/types';
-
-const STATUS_TONE: Record<ApplicationStatus, 'muted' | 'success' | 'warning' | 'danger' | 'accent'> =
-  {
-    APPLIED: 'accent',
-    ALLOTTED: 'success',
-    PARTIAL: 'success',
-    NOT_ALLOTTED: 'muted',
-    WITHDRAWN: 'muted',
-    REFUNDED: 'warning',
-  };
-
-const STATUS_ACCENT: Record<ApplicationStatus, string> = {
-  APPLIED: colors.accent,
-  ALLOTTED: colors.success,
-  PARTIAL: colors.success,
-  NOT_ALLOTTED: colors.textMuted,
-  WITHDRAWN: colors.textMuted,
-  REFUNDED: colors.warning,
-};
 
 type Filter = 'all' | 'live' | 'allotted' | 'closed';
 
@@ -71,36 +51,9 @@ function uniformStatus(group: ApplicationPnl[]): ApplicationStatus | null {
   return group.every((r) => r.status === first) ? first : null;
 }
 
-function outcomeLabel(r: OnDemandCheckResult): string {
-  if (r.outcome === 'resolved') {
-    if (r.status === 'ALLOTTED') return `Allotted, ${r.shares_allotted} of ${r.shares_applied} shares`;
-    if (r.status === 'PARTIAL') return `Partial, ${r.shares_allotted} of ${r.shares_applied} shares`;
-    return 'Not allotted';
-  }
-  if (r.outcome === 'not-yet') return r.message ?? 'Results were not announced';
-  return r.message ?? 'Could not check.';
-}
-
-function outcomeTone(r: OnDemandCheckResult): AllotmentCheckResultTone {
-  if (r.outcome === 'resolved') return r.status === 'ALLOTTED' || r.status === 'PARTIAL' ? 'success' : 'neutral';
-  if (r.outcome === 'not-yet') return r.message ? 'warning' : 'neutral';
-  return 'warning';
-}
-
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString('en-IN', {
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
 export default function ApplicationsTab() {
   const router = useRouter();
-  const queryClient = useQueryClient();
   const [filter, setFilter] = useState<Filter>('all');
-  const [checkResults, setCheckResults] = useState<Record<string, BulkAllotmentCheck>>({});
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
 
   const rows = applications.data ?? [];
@@ -127,48 +80,6 @@ export default function ApplicationsTab() {
     () => groups.filter((g) => g.some((r) => matches(r.status, filter))),
     [groups, filter],
   );
-
-  const check = useMutation({
-    mutationFn: async ({
-      ipoId,
-      ids,
-      kfintechCompanyId,
-      bigshareCompanyId,
-      mufgCompanyId,
-      registrar,
-    }: {
-      ipoId: string;
-      ids: string[];
-      kfintechCompanyId: string | null;
-      bigshareCompanyId: string | null;
-      mufgCompanyId: string | null;
-      registrar: string | null;
-    }) => {
-      const outcome = await checkAllotmentsForIpo(ipoId, ids, {
-        kfintech_company_id: kfintechCompanyId,
-        bigshare_company_id: bigshareCompanyId,
-        mufg_company_id: mufgCompanyId,
-        registrar,
-      });
-      return { ipoId, outcome };
-    },
-    onSuccess: async ({ ipoId, outcome }) => {
-      // Unconditional: the unmatched path stamps allotment_checked_at too (see
-      // checkAllotmentsForIpo), so gating this on `matched` left "Last checked"
-      // showing the *previous* tap's time for as long as the IPO stayed
-      // unmatched — exactly the case the stamp was added for.
-      await queryClient.invalidateQueries({ queryKey: ['applications'] });
-      setCheckResults((prev) => ({ ...prev, [ipoId]: outcome }));
-    },
-    onError: (e, { ipoId }) => {
-      // Only reached on a genuine failure to even reach the check service
-      // (loadCheckRow errors, or resolveKfintechMatch's invoke failing) — a
-      // real "not matched" result is returned via onSuccess, not thrown, so
-      // nothing was persisted here and there's nothing to refetch.
-      const message = e instanceof Error ? e.message : 'Could not check status.';
-      setCheckResults((prev) => ({ ...prev, [ipoId]: { matched: false, message } }));
-    },
-  });
 
   // Hoisted so the loading state keeps the header — see the same note on Home.
   const header = (
@@ -241,8 +152,7 @@ export default function ApplicationsTab() {
             .reduce((s, r) => s + Number(r.realised_pnl) + Number(r.unrealised_pnl), 0);
           const hasAllotted = group.some((r) => r.shares_allotted > 0);
           const eligible = group.filter((r) => r.status === 'APPLIED');
-          const checking = check.isPending && check.variables?.ipoId === first.ipo_id;
-          const result = checkResults[first.ipo_id];
+          const summary = summariseCheck(group);
           const lastChecked = group
             .map((r) => r.allotment_checked_at)
             .filter((v): v is string => v !== null)
@@ -269,7 +179,16 @@ export default function ApplicationsTab() {
                       {first.company_name}
                     </Text>
                     <Text style={styles.sub} numberOfLines={1}>
-                      {group.length} account{group.length === 1 ? '' : 's'} applied
+                      {summary.allottedAccounts > 0
+                        ? `${summary.allottedAccounts} of ${summary.totalAccounts} allotted · ${summary.sharesAllotted} shares`
+                        : summary.pending
+                          ? `${group.length} account${group.length === 1 ? '' : 's'} applied`
+                          : // Nothing allotted and nothing pending: say which
+                            // settled state it is, since withdrawn and refunded
+                            // are not "not allotted".
+                            status
+                            ? STATUS_LABEL[status]
+                            : `${group.length} accounts`}
                     </Text>
                   </View>
                   {status ? (
@@ -290,6 +209,7 @@ export default function ApplicationsTab() {
                       <Text style={styles.pillText} numberOfLines={1}>
                         {r.account_nickname}
                         {categories.size > 1 ? ` · ${r.category}` : ''}
+                        {r.shares_allotted > 0 ? ` · ${r.shares_allotted} shares` : ''}
                       </Text>
                     </Pressable>
                   ))}
@@ -327,22 +247,7 @@ export default function ApplicationsTab() {
                         title="Check"
                         variant="secondary"
                         size="sm"
-                        onPress={() => {
-                          setCheckResults((prev) => {
-                            const next = { ...prev };
-                            delete next[first.ipo_id];
-                            return next;
-                          });
-                          check.mutate({
-                            ipoId: first.ipo_id,
-                            ids: eligible.map((r) => r.id),
-                            kfintechCompanyId: first.kfintech_company_id,
-                            bigshareCompanyId: first.bigshare_company_id,
-                            mufgCompanyId: first.mufg_company_id,
-                            registrar: first.registrar,
-                          });
-                        }}
-                        loading={checking}
+                        onPress={() => router.push(`/allotment/${first.ipo_id}`)}
                       />
                     </View>
                   )}
@@ -369,31 +274,9 @@ export default function ApplicationsTab() {
                   )}
                 </View>
 
-                {/* The check's feedback stays below the action row. */}
-                {eligible.length > 0 && (
+                {eligible.length > 0 && lastChecked && (
                   <View style={{ marginTop: spacing.md }}>
-                    {lastChecked && (
-                      <Text style={styles.meta}>Last checked {formatDateTime(lastChecked)}</Text>
-                    )}
-                    {result && !result.matched && (
-                      <Banner tone="warning">{result.message}</Banner>
-                    )}
-                    {result && result.matched && (
-                      <View style={{ marginTop: spacing.md }}>
-                        <AllotmentCheckResults
-                          results={result.results.map((r) => {
-                            const nickname =
-                              group.find((row) => row.id === r.id)?.account_nickname ?? r.id;
-                            return {
-                              id: r.id,
-                              label: nickname,
-                              message: outcomeLabel(r),
-                              tone: outcomeTone(r),
-                            };
-                          })}
-                        />
-                      </View>
-                    )}
+                    <Text style={styles.meta}>Last checked {formatDateTime(lastChecked)}</Text>
                   </View>
                 )}
               </Card>
