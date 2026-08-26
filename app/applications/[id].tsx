@@ -50,7 +50,16 @@ export default function ApplicationDetail() {
 
   const checkNow = useMutation({
     mutationFn: () =>
-      checkAllotment(id!, application?.kfintech_company_id ?? null, application!.ipo_id),
+      checkAllotment(
+        id!,
+        {
+          kfintech_company_id: application?.kfintech_company_id ?? null,
+          bigshare_company_id: application?.bigshare_company_id ?? null,
+          mufg_company_id: application?.mufg_company_id ?? null,
+          registrar: application?.registrar ?? null,
+        },
+        application!.ipo_id,
+      ),
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: ['applications'] });
 
@@ -68,7 +77,10 @@ export default function ApplicationDetail() {
                 }
               : { title: 'Not allotted', message: 'No shares this time.' }
           : result.outcome === 'not-yet'
-            ? { title: 'Not announced yet', message: 'Results were not announced.' }
+            ? {
+                title: result.message ? 'Could not check automatically' : 'Not announced yet',
+                message: result.message ?? 'Results were not announced.',
+              }
             : { title: 'Could not check', message: result.message ?? 'Please try again.' };
       Alert.alert(title, message);
     },

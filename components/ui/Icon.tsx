@@ -47,13 +47,19 @@ const ICONS = {
   logout: { android: 'logout', ios: 'rectangle.portrait.and.arrow.right' },
   edit: { android: 'edit', ios: 'pencil' },
   trash: { android: 'delete', ios: 'trash.fill' },
+  home: { android: 'home', ios: 'house.fill' },
+  clock: { android: 'schedule', ios: 'clock.fill' },
+  briefcase: { android: 'work', ios: 'briefcase.fill' },
+  person: { android: 'person', ios: 'person.crop.circle.fill' },
+  bell: { android: 'notifications', ios: 'bell.fill' },
+  close: { android: 'close', ios: 'xmark' },
 } as const;
 
 export type IconName = keyof typeof ICONS;
 
 export function Icon({
   name,
-  size = 22,
+  size = 24,
   color = colors.textMuted,
   style,
 }: {

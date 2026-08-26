@@ -7,13 +7,15 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import {
   AllotmentCheckResults,
   type AllotmentCheckResultTone,
+  AppHeader,
+  Avatar,
   Badge,
   Banner,
   Button,
   Card,
   EmptyState,
   ErrorText,
-  Heading,
+  HeaderAction,
   Icon,
   Loading,
   Screen,
@@ -42,8 +44,8 @@ const STATUS_ACCENT: Record<ApplicationStatus, string> = {
   APPLIED: colors.accent,
   ALLOTTED: colors.success,
   PARTIAL: colors.success,
-  NOT_ALLOTTED: colors.textFaint,
-  WITHDRAWN: colors.textFaint,
+  NOT_ALLOTTED: colors.textMuted,
+  WITHDRAWN: colors.textMuted,
   REFUNDED: colors.warning,
 };
 
@@ -75,13 +77,13 @@ function outcomeLabel(r: OnDemandCheckResult): string {
     if (r.status === 'PARTIAL') return `Partial, ${r.shares_allotted} of ${r.shares_applied} shares`;
     return 'Not allotted';
   }
-  if (r.outcome === 'not-yet') return 'Results were not announced';
+  if (r.outcome === 'not-yet') return r.message ?? 'Results were not announced';
   return r.message ?? 'Could not check.';
 }
 
 function outcomeTone(r: OnDemandCheckResult): AllotmentCheckResultTone {
   if (r.outcome === 'resolved') return r.status === 'ALLOTTED' || r.status === 'PARTIAL' ? 'success' : 'neutral';
-  if (r.outcome === 'not-yet') return 'neutral';
+  if (r.outcome === 'not-yet') return r.message ? 'warning' : 'neutral';
   return 'warning';
 }
 
@@ -131,12 +133,23 @@ export default function ApplicationsTab() {
       ipoId,
       ids,
       kfintechCompanyId,
+      bigshareCompanyId,
+      mufgCompanyId,
+      registrar,
     }: {
       ipoId: string;
       ids: string[];
       kfintechCompanyId: string | null;
+      bigshareCompanyId: string | null;
+      mufgCompanyId: string | null;
+      registrar: string | null;
     }) => {
-      const outcome = await checkAllotmentsForIpo(ipoId, ids, kfintechCompanyId);
+      const outcome = await checkAllotmentsForIpo(ipoId, ids, {
+        kfintech_company_id: kfintechCompanyId,
+        bigshare_company_id: bigshareCompanyId,
+        mufg_company_id: mufgCompanyId,
+        registrar,
+      });
       return { ipoId, outcome };
     },
     onSuccess: async ({ ipoId, outcome }) => {
@@ -157,12 +170,31 @@ export default function ApplicationsTab() {
     },
   });
 
-  if (applications.isLoading) return <Loading label="Loading applications…" />;
+  // Hoisted so the loading state keeps the header — see the same note on Home.
+  const header = (
+    <AppHeader
+      title="Allotment Status"
+      right={
+        <HeaderAction
+          icon="add"
+          label="Record an application"
+          color={colors.accent}
+          onPress={() => router.push('/applications/new')}
+        />
+      }
+    />
+  );
+
+  if (applications.isLoading) {
+    return (
+      <Screen inset header={header}>
+        <Loading label="Loading applications…" />
+      </Screen>
+    );
+  }
 
   return (
-    <Screen inset>
-      <Heading sub="Every bid you have placed, and what came of it.">Applications</Heading>
-
+    <Screen inset header={header}>
       <ErrorText>
         {applications.error instanceof Error ? applications.error.message : null}
       </ErrorText>
@@ -175,18 +207,21 @@ export default function ApplicationsTab() {
         />
       )}
 
-      <Button
-        title="Record an application"
-        icon="add"
-        onPress={() => router.push('/applications/new')}
-      />
-
       {rows.length === 0 ? (
-        <EmptyState
-          icon="applications"
-          title="No applications yet"
-          body="Once you apply to an IPO, record it here to track allotment and listing gains."
-        />
+        <>
+          <EmptyState
+            icon="applications"
+            title="No applications yet"
+            body="Once you apply to an IPO, record it here to track allotment and listing gains."
+          />
+          {/* The header's + carries this action once the list has content; on
+              an empty screen there is nothing to infer it from. */}
+          <Button
+            title="Record an application"
+            icon="add"
+            onPress={() => router.push('/applications/new')}
+          />
+        </>
       ) : visible.length === 0 ? (
         <EmptyState
           icon="applications"
@@ -228,7 +263,8 @@ export default function ApplicationsTab() {
                 />
 
                 <View style={styles.header}>
-                  <View style={{ flex: 1 }}>
+                  <Avatar name={first.company_name} size={38} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={styles.company} numberOfLines={1}>
                       {first.company_name}
                     </Text>
@@ -301,6 +337,9 @@ export default function ApplicationsTab() {
                             ipoId: first.ipo_id,
                             ids: eligible.map((r) => r.id),
                             kfintechCompanyId: first.kfintech_company_id,
+                            bigshareCompanyId: first.bigshare_company_id,
+                            mufgCompanyId: first.mufg_company_id,
+                            registrar: first.registrar,
                           });
                         }}
                         loading={checking}
@@ -368,8 +407,18 @@ export default function ApplicationsTab() {
 
 const styles = StyleSheet.create({
   card: { paddingLeft: spacing.lg + 4 },
-  rail: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 3 },
-  header: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
+  rail: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 3,
+    // Card stopped clipping its children — that would cut off the shadow that
+    // now defines its edge — so the rail rounds its own outer corners.
+    borderTopLeftRadius: radius.md,
+    borderBottomLeftRadius: radius.md,
+  },
+  header: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   company: { ...type.bodyStrong, color: colors.text, fontSize: 16 },
   sub: { ...type.caption, color: colors.textMuted, marginTop: 2 },
   pillRow: {
@@ -400,6 +449,6 @@ const styles = StyleSheet.create({
   },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs + 1, flex: 1 },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
-  meta: { ...type.caption, color: colors.textFaint },
+  meta: { ...type.caption, color: colors.textMuted },
   pnl: { ...type.bodyStrong, fontSize: 15 },
 });

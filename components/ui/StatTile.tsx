@@ -8,7 +8,7 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, View, type ViewStyle } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
-import { colors, motion, spacing, type } from '../../constants/theme';
+import { colors, motion, radius, spacing, type } from '../../constants/theme';
 import { Card } from './Card';
 import { Icon, type IconName } from './Icon';
 
@@ -115,7 +115,7 @@ const styles = StyleSheet.create({
   },
   tileLabel: { ...type.label, color: colors.textMuted, fontSize: 11, flexShrink: 1 },
   tileValue: { ...type.stat, marginTop: spacing.sm },
-  tileHint: { ...type.caption, color: colors.textFaint, fontSize: 11, marginTop: spacing.xs },
+  tileHint: { ...type.caption, color: colors.textMuted, fontSize: 11, marginTop: spacing.xs },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -128,11 +128,16 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     width: 3,
+    // The card no longer clips its children — clipping would cut off the
+    // shadow that now defines it — so the rail rounds its own outer corners
+    // to match.
+    borderTopLeftRadius: radius.md,
+    borderBottomLeftRadius: radius.md,
   },
   rowIcon: {
     width: 38,
     height: 38,
-    borderRadius: 12,
+    borderRadius: radius.md,
     backgroundColor: colors.surfaceAlt,
     alignItems: 'center',
     justifyContent: 'center',

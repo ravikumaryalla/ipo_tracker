@@ -199,6 +199,54 @@ export function normalizeName(name: unknown): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
+/**
+ * Same cleanup pipeline as `normalizeName`, but returns the cleaned words
+ * rather than flattening them — used by the registrar dropdown matchers
+ * (see `firstTwoWordsMatch`), which need word boundaries to compare the
+ * first two words rather than the whole name.
+ */
+export function significantWords(name: unknown): string[] {
+  const cleaned = decodeEntities(String(name ?? ''))
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\bipo\b/g, ' ')
+    .replace(NAME_NOISE, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+  return cleaned ? cleaned.split(' ') : [];
+}
+
+/**
+ * True if `a` and `b` are identical, or if their shared character prefix
+ * covers all but the last couple of characters of the shorter one — enough to
+ * bridge a registrar's spelling variant of the same word ("Jewellery" vs
+ * "Jewellers": shared prefix "jeweller", 8 of 9 chars) without firing on
+ * genuinely different short words ("steel" vs "steamers": shared prefix
+ * "ste", only 3 of 5 chars).
+ */
+export function sharesLongPrefix(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const minLen = Math.min(a.length, b.length);
+  let common = 0;
+  while (common < minLen && a[common] === b[common]) common++;
+  return common >= 4 && common >= minLen - 2;
+}
+
+/**
+ * True if two `significantWords()` lists refer to the same company under the
+ * registrar-dropdown matching rule: the first word must match exactly, and
+ * the second word (if both sides have one) only needs to share a long common
+ * prefix rather than match exactly.
+ */
+export function firstTwoWordsMatch(a: string[], b: string[]): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  if (a[0] !== b[0]) return false;
+  if (a.length < 2 || b.length < 2) return true;
+  return sharesLongPrefix(a[1], b[1]);
+}
+
 // ---------------------------------------------------------------------------
 // ipowatch.in HTML tables
 //
@@ -543,10 +591,9 @@ export function ipowatchIpoRow(
 
   const listing = listingByName.get(normalizeName(company));
   const nse = (listing?.nse_symbol ?? '').toUpperCase();
-  const bse = (listing?.bse_symbol ?? '').toUpperCase();
   const slug = slugFromPath(row.url) ?? '';
   const prior = priorSymbols.get(`${normalizeName(company)}|${open}`);
-  const symbol = nse || bse || prior || symbolFromSlug(slug);
+  const symbol = (nse || prior || symbolFromSlug(slug)).toUpperCase();
   if (!symbol) return null;
 
   const type = row.type_cell.toUpperCase();
@@ -613,6 +660,8 @@ export type IpoIndexes = {
   byNameOpen: Map<string, string>;
   /** normalizeName → every candidate, for the fuzzy date pass. */
   byName: Map<string, { id: string; open_date: string | null }[]>;
+  /** significantWords()[0] → every candidate, for registrar dropdown matching (see firstTwoWordsMatch). */
+  byFirstWord: Map<string, { id: string; words: string[] }[]>;
 };
 
 export function buildIpoIndexes(
@@ -622,6 +671,7 @@ export function buildIpoIndexes(
     bySymbolOpen: new Map(),
     byNameOpen: new Map(),
     byName: new Map(),
+    byFirstWord: new Map(),
   };
 
   for (const row of rows) {
@@ -631,6 +681,13 @@ export function buildIpoIndexes(
     const bucket = indexes.byName.get(name);
     if (bucket) bucket.push({ id: row.id, open_date: row.open_date });
     else indexes.byName.set(name, [{ id: row.id, open_date: row.open_date }]);
+
+    const words = significantWords(row.company_name);
+    if (words.length > 0) {
+      const firstWordBucket = indexes.byFirstWord.get(words[0]);
+      if (firstWordBucket) firstWordBucket.push({ id: row.id, words });
+      else indexes.byFirstWord.set(words[0], [{ id: row.id, words }]);
+    }
   }
 
   return indexes;
@@ -731,23 +788,78 @@ export function parseKfintechCompanies(bundleSource: string): KfintechCompany[] 
 }
 
 /**
- * Match one KFintech dropdown entry to an `ipos` row.
+ * Match one registrar dropdown entry (any of KFintech/Bigshare/MUFG) to an
+ * `ipos` row, by first-word-exact + second-word-fuzzy comparison (see
+ * `firstTwoWordsMatch`) rather than requiring the whole name to be identical.
  *
- * KFintech's list carries no open date and no exchange symbol, and it mixes
- * equity IPOs with NCDs/bonds we never track — so name is the only signal
- * available. Same refusal rule as `resolveIpoId`: an unmatched or ambiguous
- * name is left alone rather than guessed at, since a wrong match would show
- * one company's allotment status on another's application.
+ * Unlike `resolveIpoId`'s GMP-attachment ladder, this does NOT refuse on
+ * ambiguity: registrar dropdowns list currently-open issues in a stable
+ * order, and when more than one entry would match the same `ipos` row, the
+ * first (topmost) one processed wins — `claimed` is threaded through one
+ * registrar's whole dropdown pass by the caller so later look-alikes can't
+ * steal an id a topmost entry already matched. This is a deliberate
+ * precision-for-recall trade-off: a registrar's own listing carries no open
+ * date and no exchange symbol, and often spells the tail of a name
+ * differently (or misspells a word) from how it's stored here, so the exact
+ * whole-name rule this used to use left real, live IPOs permanently
+ * unmatched.
  */
+function resolveCompanyMatch(
+  companyName: string,
+  indexes: IpoIndexes,
+  claimed: Set<string>,
+): string | null {
+  const words = significantWords(companyName);
+  if (words.length === 0) return null;
+
+  for (const candidate of indexes.byFirstWord.get(words[0]) ?? []) {
+    if (claimed.has(candidate.id)) continue;
+    if (firstTwoWordsMatch(words, candidate.words)) {
+      claimed.add(candidate.id);
+      return candidate.id;
+    }
+  }
+
+  return null;
+}
+
+/** Match one KFintech dropdown entry to an `ipos` row — see `resolveCompanyMatch`. */
 export function resolveKfintechCompanyMatch(
   company: KfintechCompany,
   indexes: IpoIndexes,
+  claimed: Set<string>,
 ): string | null {
-  const name = normalizeName(company.name);
-  if (!name) return null;
+  return resolveCompanyMatch(company.name, indexes, claimed);
+}
 
-  const candidates = indexes.byName.get(name);
-  if (candidates && candidates.length === 1) return candidates[0].id;
+// ---------------------------------------------------------------------------
+// Bigshare allotment-status company list
+// ---------------------------------------------------------------------------
 
-  return null;
+/** One entry from Bigshare's "Select Company" dropdown. */
+export type BigshareCompany = { id: string; name: string };
+
+/** Match one Bigshare dropdown entry to an `ipos` row — see `resolveCompanyMatch`. */
+export function resolveBigshareCompanyMatch(
+  company: BigshareCompany,
+  indexes: IpoIndexes,
+  claimed: Set<string>,
+): string | null {
+  return resolveCompanyMatch(company.name, indexes, claimed);
+}
+
+// ---------------------------------------------------------------------------
+// MUFG Intime allotment-status company list
+// ---------------------------------------------------------------------------
+
+/** One entry from MUFG's company list (IPO.aspx/GetDetails). */
+export type MufgCompany = { id: string; name: string };
+
+/** Match one MUFG dropdown entry to an `ipos` row — see `resolveCompanyMatch`. */
+export function resolveMufgCompanyMatch(
+  company: MufgCompany,
+  indexes: IpoIndexes,
+  claimed: Set<string>,
+): string | null {
+  return resolveCompanyMatch(company.name, indexes, claimed);
 }

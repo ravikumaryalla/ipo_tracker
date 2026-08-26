@@ -115,6 +115,7 @@ export default function AccountDetail() {
         <SecretField label="Phone number" value={data.phone} />
         <SecretField label="Password" value={data.password} />
         <SecretField label="MPIN" value={data.mpin} />
+        <SecretField label="TPIN" value={data.tpin} />
         {data.password_changed_at && (
           <Text style={styles.meta}>
             Password last changed {new Date(data.password_changed_at).toLocaleDateString('en-IN')}
@@ -143,5 +144,5 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: spacing.lg, gap: spacing.md },
   title: { ...type.title, color: colors.text },
   subtitle: { ...type.body, color: colors.textMuted, marginTop: 2 },
-  meta: { ...type.caption, color: colors.textFaint, marginTop: spacing.md },
+  meta: { ...type.caption, color: colors.textMuted, marginTop: spacing.md },
 });

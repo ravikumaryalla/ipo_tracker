@@ -120,6 +120,15 @@ describe('ipogyaniIpoRow', () => {
     });
   });
 
+  it('uppercases a lowercase prior symbol, so casing never splits one company into two rows', () => {
+    const record = ipogyaniIpoRow(
+      BEHARI_LAL,
+      priorIndex([{ ...NSE_BEHARI_LAL, symbol: 'beharilal' }]),
+      TODAY,
+    );
+    expect(record?.symbol).toBe('BEHARILAL');
+  });
+
   it('reuses the symbol and exchange an earlier provider chose for the same issue', () => {
     // Names differ ("Behari Lal Engineering" vs "…Limited") — normalizeName is
     // what bridges them. Without this the row would key on BEHARILAL from the

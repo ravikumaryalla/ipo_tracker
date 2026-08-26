@@ -6,7 +6,6 @@
  * decision in one effect makes the access rules readable in one place.
  */
 import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
-import { Sora_600SemiBold, Sora_700Bold } from '@expo-google-fonts/sora';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import { QueryClient, defaultShouldDehydrateQuery } from '@tanstack/react-query';
@@ -27,7 +26,7 @@ import { AuthProvider, useAuth } from '../lib/auth';
 import { VaultProvider, useVault } from '../lib/vault';
 
 // Hold the native splash until the fonts are ready. Without this the first
-// frame renders in the system font and visibly reflows once Sora/Inter land.
+// frame renders in the system font and visibly reflows once Inter lands.
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 const queryClient = new QueryClient({
@@ -167,8 +166,6 @@ function RouteGate({ children }: { children: React.ReactNode }) {
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
-    Sora_600SemiBold,
-    Sora_700Bold,
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,
@@ -201,13 +198,24 @@ export default function RootLayout() {
     >
       <AuthProvider>
         <VaultProvider>
-          <StatusBar style="light" />
+          {/* The chrome is white now, so the OS clock and icons must be dark. */}
+          <StatusBar style="dark" />
           <RouteGate>
             <Stack
+              /*
+               * Detail and form routes keep their native headers rather than
+               * the in-app AppHeader the tab screens use: the native one gives
+               * back the platform back-gesture, iOS back-title behaviour and
+               * Android hardware-back title sync for free, and app.json already
+               * disables the predictive back gesture. Only the tab screens need
+               * actions the native header cannot express declaratively.
+               */
               screenOptions={{
-                headerStyle: { backgroundColor: colors.bg },
-                headerTintColor: colors.text,
-                headerTitleStyle: { fontFamily: fonts.displayMedium, fontSize: 17 },
+                headerStyle: { backgroundColor: colors.surface },
+                headerTintColor: colors.navy,
+                headerTitleStyle: { fontFamily: fonts.bodySemi, fontSize: 16 },
+                // Android draws an elevation line here regardless; on iOS this
+                // removes the hairline so the header reads as one plane.
                 headerShadowVisible: false,
                 contentStyle: { backgroundColor: colors.bg },
               }}
@@ -218,11 +226,9 @@ export default function RootLayout() {
               <Stack.Screen name="accounts/[id]" options={{ title: 'Account' }} />
               <Stack.Screen name="accounts/new" options={{ title: 'Add account' }} />
               <Stack.Screen name="ipos/[id]" options={{ title: 'IPO' }} />
-              <Stack.Screen name="ipos/new" options={{ title: 'Add IPO' }} />
               <Stack.Screen name="applications/new" options={{ title: 'New application' }} />
               <Stack.Screen name="applications/[id]" options={{ title: 'Application' }} />
               <Stack.Screen name="applications/bulk-update" options={{ title: 'Update all' }} />
-              <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
               <Stack.Screen
                 name="settings/change-pin"
                 options={{ title: 'Change PIN' }}

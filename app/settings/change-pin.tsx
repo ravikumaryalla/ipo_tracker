@@ -13,7 +13,7 @@ import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { Text } from 'react-native';
 
-import { Banner, Button, Card, ErrorText, Field, Heading, Screen } from '../../components/ui';
+import { Banner, Button, Card, ErrorText, Heading, PinInput, Screen } from '../../components/ui';
 import { colors, fonts, spacing } from '../../constants/theme';
 import { useVault } from '../../lib/vault';
 
@@ -103,31 +103,9 @@ export default function ChangePin() {
 
       <ErrorText>{error}</ErrorText>
 
-      <Field
-        label="Current PIN"
-        value={current}
-        onChangeText={(v) => setCurrent(v.replace(/\D/g, '').slice(0, 6))}
-        secureTextEntry
-        keyboardType="number-pad"
-        maxLength={6}
-      />
-      <Field
-        label="New PIN"
-        value={next}
-        onChangeText={(v) => setNext(v.replace(/\D/g, '').slice(0, 6))}
-        secureTextEntry
-        keyboardType="number-pad"
-        maxLength={6}
-        hint="6 digits."
-      />
-      <Field
-        label="Confirm new PIN"
-        value={confirm}
-        onChangeText={(v) => setConfirm(v.replace(/\D/g, '').slice(0, 6))}
-        secureTextEntry
-        keyboardType="number-pad"
-        maxLength={6}
-      />
+      <PinInput label="Current PIN" value={current} onChangeText={setCurrent} />
+      <PinInput label="New PIN" value={next} onChangeText={setNext} hint="6 digits." />
+      <PinInput label="Confirm new PIN" value={confirm} onChangeText={setConfirm} />
 
       <Button
         title={busy ? 'Re-encrypting…' : 'Change PIN'}

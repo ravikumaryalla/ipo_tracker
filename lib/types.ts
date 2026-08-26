@@ -61,6 +61,7 @@ export type DematAccountRow = {
   phone_enc: string | null;
   password_enc: string | null;
   mpin_enc: string | null;
+  tpin_enc: string | null;
   upi_id_enc: string | null;
   linked_bank_enc: string | null;
   /** Deliberately unencrypted — see 20260811000007_pan_plaintext.sql. */
@@ -96,6 +97,10 @@ export type Ipo = {
   registrar_url: string | null;
   /** KFintech's internal clientId for this issue's allotment-status lookup. Null unless matched. */
   kfintech_company_id: string | null;
+  /** Bigshare's internal company id for this issue's allotment-status lookup. Null unless matched. */
+  bigshare_company_id: string | null;
+  /** MUFG Intime's internal company id for this issue's allotment-status lookup. Null unless matched. */
+  mufg_company_id: string | null;
   source: string;
   created_by: string | null;
   last_synced_at: string | null;
@@ -156,7 +161,10 @@ export type ApplicationPnl = {
   amount_currently_blocked: number;
   realised_pnl: number;
   unrealised_pnl: number;
+  registrar: string | null;
   kfintech_company_id: string | null;
+  bigshare_company_id: string | null;
+  mufg_company_id: string | null;
 };
 
 export type CredentialHistoryRow = {
@@ -228,6 +236,7 @@ export type Database = {
     };
     Views: {
       v_application_pnl: { Row: ApplicationPnl; Relationships: [] };
+      v_ipo_latest_gmp: { Row: IpoGmp; Relationships: [] };
     };
     Functions: Record<string, never>;
     Enums: {

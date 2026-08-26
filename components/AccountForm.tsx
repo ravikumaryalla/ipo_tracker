@@ -36,6 +36,7 @@ export function AccountForm({
   const [phone, setPhone] = useState(initial?.phone ?? '');
   const [password, setPassword] = useState(initial?.password ?? '');
   const [mpin, setMpin] = useState(initial?.mpin ?? '');
+  const [tpin, setTpin] = useState(initial?.tpin ?? '');
   const [upiId, setUpiId] = useState(initial?.upi_id ?? '');
   const [linkedBank, setLinkedBank] = useState(initial?.linked_bank ?? '');
   const [pan, setPan] = useState(initial?.pan ?? '');
@@ -68,6 +69,7 @@ export function AccountForm({
         phone: phone.trim(),
         password,
         mpin,
+        tpin,
         upi_id: upiId.trim(),
         linked_bank: linkedBank.trim(),
         pan: pan.trim().toUpperCase(),
@@ -139,6 +141,14 @@ export function AccountForm({
           secureTextEntry
           hint="The short numeric PIN brokers ask for at login or order placement."
         />
+        <Field
+          label="TPIN"
+          value={tpin}
+          onChangeText={setTpin}
+          keyboardType="number-pad"
+          secureTextEntry
+          hint="The CDSL/NSDL PIN that authorises shares leaving your demat account when you sell."
+        />
       </Card>
 
       <Card>
@@ -158,7 +168,7 @@ export function AccountForm({
 
 const styles = StyleSheet.create({
   section: { ...type.heading, color: colors.text, marginBottom: spacing.xs },
-  sectionHint: { ...type.caption, color: colors.textFaint, marginBottom: spacing.lg },
+  sectionHint: { ...type.caption, color: colors.textMuted, marginBottom: spacing.lg },
   label: { ...type.label, color: colors.textMuted, marginBottom: spacing.sm },
   chip: {
     backgroundColor: colors.surfaceAlt,

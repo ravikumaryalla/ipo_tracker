@@ -121,6 +121,21 @@ create table public.ipos (
 create unique index ipos_symbol_open_idx on public.ipos(symbol, open_date);
 create index ipos_dates_idx on public.ipos(open_date desc nulls last);
 
+-- Symbol is written by several independent scrapers that don't agree on
+-- casing/whitespace; normalizing here (rather than trusting every writer) is
+-- what keeps ipos_symbol_open_idx from treating the same company as two rows.
+create or replace function public.normalize_ipo_symbol()
+returns trigger as $$
+begin
+  new.symbol := upper(trim(new.symbol));
+  return new;
+end;
+$$ language plpgsql;
+
+create trigger ipos_normalize_symbol
+  before insert or update on public.ipos
+  for each row execute function public.normalize_ipo_symbol();
+
 -- ---------------------------------------------------------------------------
 -- ipo_applications: which of my accounts applied to what
 -- ---------------------------------------------------------------------------
@@ -468,3 +483,20 @@ alter table public.ipo_gmp enable row level security;
 -- only ever reference synced IPOs, which every user can already read.
 create policy "gmp: read all" on public.ipo_gmp
   for select to authenticated using (true);
+
+-- ---------------------------------------------------------------------------
+-- v_ipo_latest_gmp: one row per IPO's best GMP reading, so the IPO list can
+-- show a grey-market premium figure with a single extra query instead of one
+-- per row. Provider preference mirrors GMP_PROVIDERS in lib/db/ipos.ts.
+--
+-- security_invoker = on, same reasoning as v_application_pnl above.
+-- ---------------------------------------------------------------------------
+create view public.v_ipo_latest_gmp
+with (security_invoker = on)
+as
+select distinct on (ipo_id) *
+from public.ipo_gmp
+where ipo_id is not null
+order by ipo_id,
+  case provider when 'IPOGYANI' then 0 when 'IPOWATCH' then 1 else 2 end,
+  observed_at desc;

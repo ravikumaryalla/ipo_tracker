@@ -28,13 +28,13 @@ function outcomeLabel(r: OnDemandCheckResult): string {
     if (r.status === 'PARTIAL') return `Partial, ${r.shares_allotted} of ${r.shares_applied} shares`;
     return 'Not allotted';
   }
-  if (r.outcome === 'not-yet') return 'Results were not announced';
+  if (r.outcome === 'not-yet') return r.message ?? 'Results were not announced';
   return r.message ?? 'Could not check.';
 }
 
 function outcomeTone(r: OnDemandCheckResult): AllotmentCheckResultTone {
   if (r.outcome === 'resolved') return r.status === 'ALLOTTED' || r.status === 'PARTIAL' ? 'success' : 'neutral';
-  if (r.outcome === 'not-yet') return 'neutral';
+  if (r.outcome === 'not-yet') return r.message ? 'warning' : 'neutral';
   return 'warning';
 }
 
@@ -82,7 +82,12 @@ export default function IpoDetail() {
 
   const check = useMutation({
     mutationFn: (ids: string[]) =>
-      checkAllotmentsForIpo(id!, ids, ipo.data?.kfintech_company_id ?? null),
+      checkAllotmentsForIpo(id!, ids, {
+        kfintech_company_id: ipo.data?.kfintech_company_id ?? null,
+        bigshare_company_id: ipo.data?.bigshare_company_id ?? null,
+        mufg_company_id: ipo.data?.mufg_company_id ?? null,
+        registrar: ipo.data?.registrar ?? null,
+      }),
     onSuccess: async (outcome) => {
       // Unconditional — the unmatched path stamps allotment_checked_at too, so
       // gating on `matched` left "Last checked" a tap behind. Same fix as the

@@ -27,6 +27,8 @@ function ipo(patch: Partial<Ipo>): Ipo {
     registrar: null,
     registrar_url: null,
     kfintech_company_id: null,
+    bigshare_company_id: null,
+    mufg_company_id: null,
     source: 'MANUAL',
     created_by: null,
     last_synced_at: null,

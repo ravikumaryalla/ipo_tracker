@@ -15,7 +15,16 @@ import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
-import { Banner, BrandMark, Button, Card, ErrorText, Field, Icon, Screen } from '../../components/ui';
+import {
+  Banner,
+  BrandMark,
+  Button,
+  Card,
+  ErrorText,
+  Icon,
+  PinInput,
+  Screen,
+} from '../../components/ui';
 import { colors, fonts, radius, spacing, type } from '../../constants/theme';
 import { useVault } from '../../lib/vault';
 
@@ -104,23 +113,12 @@ export default function VaultSetup() {
 
         <ErrorText>{error}</ErrorText>
 
-        <Field
-          label="6-digit PIN"
-          value={passphrase}
-          onChangeText={(v) => setPassphrase(v.replace(/\D/g, '').slice(0, 6))}
-          secureTextEntry
-          keyboardType="number-pad"
-          maxLength={6}
-          placeholder="000000"
-        />
+        <PinInput label="6-digit PIN" value={passphrase} onChangeText={setPassphrase} />
 
-        <Field
+        <PinInput
           label="Confirm PIN"
           value={confirm}
-          onChangeText={(v) => setConfirm(v.replace(/\D/g, '').slice(0, 6))}
-          secureTextEntry
-          keyboardType="number-pad"
-          maxLength={6}
+          onChangeText={setConfirm}
           onSubmitEditing={onCreate}
         />
 
@@ -130,7 +128,7 @@ export default function VaultSetup() {
           loading={busy}
         />
         {busy && (
-          <Text style={{ ...type.caption, color: colors.textFaint, textAlign: 'center' }}>
+          <Text style={{ ...type.caption, color: colors.textMuted, textAlign: 'center' }}>
             Deriving your key. This takes a few seconds by design — it is what makes guessing your
             PIN expensive.
           </Text>
@@ -172,7 +170,7 @@ export default function VaultSetup() {
         style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.lg }}
       >
         <View style={[styles.checkbox, savedConfirmed && styles.checkboxOn]}>
-          {savedConfirmed && <Icon name="check" size={16} color="#fff" />}
+          {savedConfirmed && <Icon name="check" size={16} color={colors.onAccent} />}
         </View>
         <Text style={{ ...type.body, color: colors.text, flex: 1 }}>
           I have written down my recovery code

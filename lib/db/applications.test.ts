@@ -45,7 +45,10 @@ function row(patch: Partial<ApplicationPnl>): ApplicationPnl {
     amount_currently_blocked: 0,
     realised_pnl: 0,
     unrealised_pnl: 0,
+    registrar: null,
     kfintech_company_id: null,
+    bigshare_company_id: null,
+    mufg_company_id: null,
     ...patch,
   };
 }

@@ -1,27 +1,25 @@
 /**
  * Tab navigation.
  *
- * The bar floats above the content rather than sitting in a docked strip: it is
- * inset from the edges, rounded, and solid so scrolled content never shows
- * through it. The active tab is marked by a gradient pill that grows behind the
- * icon, which is why each item animates its own indicator instead of the bar
- * sliding one shared marker — the pill has to size itself to its label.
+ * A docked bar: full-bleed, sitting on the bottom edge behind a hairline, the
+ * way the design system draws it. The active tab is marked by colour alone
+ * (navy against slate) plus the platform's own selected state, so there is no
+ * indicator to size or slide — each item only crossfades its own tint.
  */
-import { LinearGradient } from 'expo-linear-gradient';
 import { Tabs } from 'expo-router';
 import React, { useEffect } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, {
+  interpolateColor,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
-  withSpring,
   withTiming,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon, type IconName } from '../../components/ui';
-import { colors, gradients, motion, radius, spacing, type } from '../../constants/theme';
+import { colors, motion, type } from '../../constants/theme';
 
 /**
  * expo-router 57 vendors React Navigation inside its own build output, so
@@ -45,11 +43,16 @@ type TabBarProps = {
   };
 };
 
+/**
+ * Order is the bar's left-to-right order. `index` must stay named `index`:
+ * app/_layout.tsx and app/vault/setup.tsx both `router.replace('/(tabs)')`,
+ * which resolves to this group's index route.
+ */
 const TABS: { name: string; label: string; icon: IconName }[] = [
-  { name: 'index', label: 'Dashboard', icon: 'dashboard' },
-  { name: 'accounts', label: 'Accounts', icon: 'accounts' },
-  { name: 'ipos', label: 'IPOs', icon: 'ipos' },
-  { name: 'applications', label: 'Applied', icon: 'applications' },
+  { name: 'index', label: 'Home', icon: 'home' },
+  { name: 'applications', label: 'Allotment', icon: 'clock' },
+  { name: 'accounts', label: 'Demat', icon: 'briefcase' },
+  { name: 'profile', label: 'Profile', icon: 'person' },
 ];
 
 function TabItem({
@@ -71,16 +74,11 @@ function TabItem({
       ? focused
         ? 1
         : 0
-      : withSpring(focused ? 1 : 0, { damping: 18, stiffness: 180 });
+      : withTiming(focused ? 1 : 0, { duration: motion.fast });
   }, [focused, reduceMotion, active]);
 
-  const pillStyle = useAnimatedStyle(() => ({
-    opacity: active.value,
-    transform: [{ scale: 0.85 + active.value * 0.15 }],
-  }));
-
-  const iconStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: reduceMotion ? 0 : -active.value * 2 }],
+  const labelStyle = useAnimatedStyle(() => ({
+    color: interpolateColor(active.value, [0, 1], [colors.slate, colors.navy]),
   }));
 
   return (
@@ -91,78 +89,56 @@ function TabItem({
       onPress={onPress}
       style={styles.item}
     >
-      <Animated.View style={[StyleSheet.absoluteFill, styles.pillWrap, pillStyle]}>
-        <LinearGradient
-          colors={gradients.primary}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.pill}
-        />
-      </Animated.View>
-
-      <Animated.View style={[styles.itemInner, iconStyle]}>
-        <Icon name={icon} size={20} color={focused ? '#FFFFFF' : colors.textFaint} />
-        <Text style={[styles.itemLabel, focused && styles.itemLabelActive]} numberOfLines={1}>
-          {label}
-        </Text>
-      </Animated.View>
+      {/*
+        The icon is expo-symbols, whose tint is a native prop rather than a
+        style, so it cannot be driven by reanimated — it switches outright while
+        the label crossfades. At 150ms the difference is not visible.
+      */}
+      <Icon name={icon} size={22} color={focused ? colors.navy : colors.slate} />
+      <Animated.Text style={[styles.itemLabel, labelStyle]} numberOfLines={1}>
+        {label}
+      </Animated.Text>
     </Pressable>
   );
 }
 
-function FloatingTabBar({ state, navigation }: TabBarProps) {
+function DockedTabBar({ state, navigation }: TabBarProps) {
   const insets = useSafeAreaInsets();
-  const reduceMotion = useReducedMotion();
-  const enter = useSharedValue(reduceMotion ? 1 : 0);
-
-  useEffect(() => {
-    enter.value = withTiming(1, { duration: motion.slow });
-  }, [enter]);
-
-  const barStyle = useAnimatedStyle(() => ({
-    opacity: enter.value,
-    transform: [{ translateY: (1 - enter.value) * 24 }],
-  }));
 
   return (
-    <Animated.View
-      style={[styles.barWrap, { paddingBottom: insets.bottom || spacing.md }, barStyle]}
-      pointerEvents="box-none"
-    >
-      <View style={styles.bar}>
-        {state.routes.map((route, index) => {
-          const meta = TABS.find((t) => t.name === route.name);
-          if (!meta) return null;
-          const focused = state.index === index;
+    <View style={[styles.bar, { height: 64 + insets.bottom, paddingBottom: insets.bottom }]}>
+      {state.routes.map((route, index) => {
+        const meta = TABS.find((t) => t.name === route.name);
+        if (!meta) return null;
+        const focused = state.index === index;
 
-          return (
-            <TabItem
-              key={route.key}
-              focused={focused}
-              label={meta.label}
-              icon={meta.icon}
-              onPress={() => {
-                const event = navigation.emit({
-                  type: 'tabPress',
-                  target: route.key,
-                  canPreventDefault: true,
-                });
-                if (!focused && !event.defaultPrevented) {
-                  navigation.navigate(route.name);
-                }
-              }}
-            />
-          );
-        })}
-      </View>
-    </Animated.View>
+        return (
+          <TabItem
+            key={route.key}
+            focused={focused}
+            label={meta.label}
+            icon={meta.icon}
+            onPress={() => {
+              const event = navigation.emit({
+                type: 'tabPress',
+                target: route.key,
+                canPreventDefault: true,
+              });
+              if (!focused && !event.defaultPrevented) {
+                navigation.navigate(route.name);
+              }
+            }}
+          />
+        );
+      })}
+    </View>
   );
 }
 
 export default function TabsLayout() {
   return (
     <Tabs
-      tabBar={(props) => <FloatingTabBar {...props} />}
+      tabBar={(props) => <DockedTabBar {...props} />}
       screenOptions={{ headerShown: false, sceneStyle: { backgroundColor: colors.bg } }}
     >
       {TABS.map((tab) => (
@@ -173,39 +149,17 @@ export default function TabsLayout() {
 }
 
 const styles = StyleSheet.create({
-  barWrap: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: spacing.lg,
-  },
   bar: {
     flexDirection: 'row',
-    backgroundColor: colors.surfaceRaised,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.borderSoft,
-    padding: spacing.xs + 2,
-    gap: spacing.xs,
-    // Lifts the bar off the content behind it.
-    shadowColor: '#000',
-    shadowOpacity: 0.5,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 16,
+    backgroundColor: colors.surface,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
   },
   item: {
     flex: 1,
-    height: 52,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: radius.pill,
-    overflow: 'hidden',
+    gap: 3,
   },
-  pillWrap: { borderRadius: radius.pill, overflow: 'hidden' },
-  pill: { flex: 1 },
-  itemInner: { alignItems: 'center', gap: 2 },
-  itemLabel: { ...type.label, fontSize: 10, letterSpacing: 0.3, color: colors.textFaint },
-  itemLabelActive: { color: '#FFFFFF' },
+  itemLabel: { ...type.label, fontSize: 10.5, letterSpacing: 0.1 },
 });

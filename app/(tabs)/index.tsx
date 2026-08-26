@@ -1,278 +1,394 @@
 /**
- * Dashboard.
+ * Home.
  *
- * One hero figure, then supporting detail. The net position gets the only
- * oversized number and the only glow on the screen — if a second element
- * competed with it, neither would read as the answer to "how am I doing?".
+ * The IPO list, with a condensed portfolio header above the filter.
+ *
+ * That header carries the two numbers that bear on the decision this screen
+ * exists for — whether to act on something that is open right now: how much
+ * money is already tied up, and how often applying has actually worked out.
+ * Net P&L is a retrospective figure and deliberately is not here; it is on
+ * Profile, alongside the per-account breakdown that explains it.
+ *
+ * Profile shows the same allotment rate in more detail. The duplication is
+ * intended: this one is a glance, that one carries the sentence that explains
+ * the number.
+ *
+ * Each row carries the metric that matters for where the IPO is in its cycle,
+ * plus grey-market premium where a reading exists. GMP lives in `ipo_gmp`,
+ * keyed per issue — showing it here without a query per row relies on
+ * v_ipo_latest_gmp, a view that already picks the best reading per IPO in
+ * Postgres, fetched once for the whole list via latestGmpByIpo().
  */
 import { useQuery } from '@tanstack/react-query';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import {
   AnimatedNumber,
+  AppHeader,
+  Avatar,
   Badge,
+  Banner,
   Card,
   DonutGauge,
   EmptyState,
   ErrorText,
-  Icon,
-  ListRow,
   Loading,
   Screen,
-  SectionHeader,
-  StatTile,
+  Segmented,
 } from '../../components/ui';
-import {
-  colors,
-  formatInr,
-  formatInrCompact,
-  gradients,
-  motion,
-  radius,
-  spacing,
-  type,
-} from '../../constants/theme';
+import { colors, formatInr, motion, spacing, type } from '../../constants/theme';
 import { listApplications, summarise } from '../../lib/db/applications';
-import { bucketOf, listIpos } from '../../lib/db/ipos';
+import {
+  bucketOf,
+  indexGmpByIpo,
+  latestGmpByIpo,
+  latestSyncStatus,
+  listIpos,
+  type IpoBucket,
+} from '../../lib/db/ipos';
+import type { Ipo, IpoGmp } from '../../lib/types';
 
-export default function Dashboard() {
+const TABS: { key: IpoBucket; label: string }[] = [
+  { key: 'open', label: 'Open now' },
+  { key: 'upcoming', label: 'Upcoming' },
+  { key: 'closed', label: 'Closed' },
+  { key: 'listed', label: 'Listed' },
+];
+
+/** Flag the list as stale once the newest successful sync is over a day old. */
+const STALE_AFTER_HOURS = 30;
+
+/** The sync-ipos providers that write `ipos` rows; the rest are side legs. */
+const LIST_PROVIDERS = new Set(['NSE', 'BSE', 'IPOWATCH', 'IPOGYANI']);
+
+const BUCKET_BADGE: Record<
+  IpoBucket,
+  { label: string; tone: 'success' | 'info' | 'warning' | 'muted' }
+> = {
+  open: { label: 'Live', tone: 'success' },
+  upcoming: { label: 'Upcoming', tone: 'info' },
+  closed: { label: 'Closed', tone: 'warning' },
+  listed: { label: 'Listed', tone: 'muted' },
+};
+
+const shortDate = (iso: string) =>
+  new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+
+/** Price band as a single string; collapses when the band is a fixed price. */
+function priceBand(ipo: Ipo): string {
+  if (ipo.price_band_min === null) return '—';
+  const spread =
+    ipo.price_band_max !== null && ipo.price_band_max !== ipo.price_band_min
+      ? ` – ${formatInr(ipo.price_band_max)}`
+      : '';
+  return `${formatInr(ipo.price_band_min)}${spread}`;
+}
+
+/**
+ * The right-hand figure on a card. Which one is worth showing depends on the
+ * bucket: a listed issue is judged by what it did, an open one by what it costs
+ * to enter.
+ */
+function trailingMetric(
+  ipo: Ipo,
+  bucket: IpoBucket,
+): { label: string; value: string; tone: 'good' | 'bad' | 'plain' } {
+  if (bucket === 'listed' && ipo.listing_price !== null && ipo.price_band_max) {
+    const pct = ((ipo.listing_price - ipo.price_band_max) / ipo.price_band_max) * 100;
+    return {
+      label: 'Listing gain',
+      value: `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`,
+      tone: pct > 0 ? 'good' : pct < 0 ? 'bad' : 'plain',
+    };
+  }
+  if (ipo.lot_size) {
+    return { label: 'Lot size', value: `${ipo.lot_size} shares`, tone: 'plain' };
+  }
+  return {
+    label: 'Issue size',
+    value: ipo.issue_size_cr ? `₹${ipo.issue_size_cr} Cr` : '—',
+    tone: 'plain',
+  };
+}
+
+/**
+ * GMP as a card figure, or null to skip it. Skipped once listed — "Listing
+ * gain" in trailingMetric is the post-listing analogue of the same signal.
+ */
+function gmpFigure(
+  reading: IpoGmp | undefined,
+  bucket: IpoBucket,
+): { label: string; value: string; tone: 'good' | 'bad' | 'plain' } | null {
+  if (bucket === 'listed' || reading?.gmp == null) return null;
+  return {
+    label: 'GMP',
+    value: `${formatInr(reading.gmp)}${reading.gmp_percent != null ? ` (${reading.gmp_percent}%)` : ''}`,
+    tone: reading.gmp > 0 ? 'good' : reading.gmp < 0 ? 'bad' : 'plain',
+  };
+}
+
+/** The one-line date note under each card. */
+function dateNote(ipo: Ipo, bucket: IpoBucket): string {
+  const today = new Date().toISOString().slice(0, 10);
+  if (bucket === 'open') {
+    if (ipo.close_date === today) return `Closes today · ${shortDate(ipo.close_date)}`;
+    return ipo.open_date && ipo.close_date
+      ? `Open ${shortDate(ipo.open_date)} – ${shortDate(ipo.close_date)}`
+      : 'Open now';
+  }
+  if (bucket === 'upcoming') {
+    return ipo.open_date ? `Opens ${shortDate(ipo.open_date)}` : 'Dates to be announced';
+  }
+  if (bucket === 'closed') {
+    return ipo.allotment_date ? `Allotment ${shortDate(ipo.allotment_date)}` : 'Awaiting allotment';
+  }
+  return ipo.listing_date
+    ? `Listed ${shortDate(ipo.listing_date)} on ${ipo.exchange}`
+    : `Listed on ${ipo.exchange}`;
+}
+
+export default function Home() {
   const router = useRouter();
+  const [tab, setTab] = useState<IpoBucket>('open');
 
-  const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
   const ipos = useQuery({ queryKey: ['ipos'], queryFn: listIpos });
+  const sync = useQuery({ queryKey: ['syncStatus'], queryFn: latestSyncStatus });
+  const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
+  const gmp = useQuery({ queryKey: ['gmp-latest'], queryFn: latestGmpByIpo });
+  // Indexed here rather than in the query function: the persisted cache is
+  // JSON, so a Map returned by the query would rehydrate as {} — see
+  // latestGmpByIpo.
+  const gmpByIpo = useMemo(() => indexGmpByIpo(gmp.data), [gmp.data]);
 
   const summary = useMemo(() => summarise(applications.data ?? []), [applications.data]);
-  const openNow = useMemo(
-    () => (ipos.data ?? []).filter((ipo) => bucketOf(ipo) === 'open'),
-    [ipos.data],
-  );
 
-  if (applications.isLoading) return <Loading label="Loading your portfolio…" />;
+  const grouped = useMemo(() => {
+    const out: Record<IpoBucket, Ipo[]> = { open: [], upcoming: [], closed: [], listed: [] };
+    for (const ipo of ipos.data ?? []) out[bucketOf(ipo)].push(ipo);
+    return out;
+  }, [ipos.data]);
 
-  const netPnl = summary.realisedPnl + summary.unrealisedPnl;
-  const netTone = netPnl > 0 ? 'good' : netPnl < 0 ? 'bad' : 'neutral';
-  const netColor =
-    netPnl > 0 ? colors.success : netPnl < 0 ? colors.danger : colors.text;
+  const staleWarning = useMemo(() => {
+    // Only the providers that actually supply the IPO list count towards
+    // freshness. The GMP feeds, the GMP backfill, the KFintech match and the
+    // cron heartbeat also write sync_log, and a run where only those succeeded
+    // would otherwise suppress a genuine "this list is days old" warning.
+    //
+    // An allowlist rather than a denylist, so adding a provider cannot silently
+    // start suppressing the warning. KFINTECH_MATCH is why that matters: it now
+    // logs ok with "skipped: already synced once" on every run, so under a
+    // denylist it always looked like a fresh successful sync.
+    const listRows = sync.data?.filter((row) => LIST_PROVIDERS.has(row.provider));
+    const lastOk = listRows
+      ?.filter((row) => row.ok)
+      .sort((a, b) => b.ran_at.localeCompare(a.ran_at))[0];
+    if (!lastOk) {
+      const failure = listRows?.[0];
+      return failure
+        ? `IPO sync is failing (${failure.provider}: ${failure.message ?? 'unknown error'}).`
+        : null;
+    }
+    const hours = (Date.now() - new Date(lastOk.ran_at).getTime()) / 3_600_000;
+    return hours > STALE_AFTER_HOURS
+      ? `IPO list last updated ${Math.round(hours / 24)} day(s) ago. Check details before applying.`
+      : null;
+  }, [sync.data]);
+
+  // Hoisted so the loading state renders through Screen with the same header
+  // rather than as a bare spinner: without it the screen has no header and no
+  // safe-area inset while loading, so the spinner sits under the status bar
+  // and the layout jumps once data lands.
+  const header = <AppHeader title="IPO Tracker" />;
+
+  if (ipos.isLoading) {
+    return (
+      <Screen inset header={header}>
+        <Loading label="Loading IPOs…" />
+      </Screen>
+    );
+  }
+
+  const visible = grouped[tab];
 
   return (
-    <Screen inset>
-      <ErrorText>
-        {applications.error instanceof Error ? applications.error.message : null}
-      </ErrorText>
-
-      {/* ---- hero -------------------------------------------------------- */}
-      <Animated.View entering={FadeIn.duration(motion.slow)}>
-        <View style={styles.hero}>
-          {/* The halo is a sibling behind the text, not a shadow: Android
-              ignores coloured shadows, so a gradient is the portable way. */}
-          <LinearGradient
-            colors={netTone === 'bad' ? gradients.negative : gradients.halo}
-            style={styles.halo}
-            pointerEvents="none"
-          />
-          <Text style={styles.heroLabel}>NET POSITION</Text>
-          <AnimatedNumber
-            value={netPnl}
-            format={formatInr}
-            style={[styles.heroValue, { color: netColor }]}
-          />
-          <View style={styles.heroMeta}>
-            <Badge
-              label={`${summary.totalApplications} application${summary.totalApplications === 1 ? '' : 's'}`}
-              tone={netTone === 'good' ? 'success' : netTone === 'bad' ? 'danger' : 'muted'}
+    <Screen inset header={header}>
+      {/* ---- portfolio header --------------------------------------------
+          The two figures that bear on "should I act on something open right
+          now?": how much is already tied up, and how often applying actually
+          works out. Net P&L is retrospective and lives on Profile instead. */}
+      <Card elevation={1} style={styles.summary}>
+        <View style={styles.summaryRow}>
+          <View style={styles.summaryFigure}>
+            <Text style={styles.summaryLabel}>AMOUNT BLOCKED</Text>
+            {/* Neutral colour: money blocked is a fact about exposure, not good
+                or bad news, so it does not take the success/danger tinting. */}
+            <AnimatedNumber
+              value={summary.amountBlocked}
+              format={formatInr}
+              style={styles.summaryValue}
             />
-            {summary.liveApplications > 0 && (
-              <Badge label={`${summary.liveApplications} live`} tone="accent" />
-            )}
+            <Text style={styles.summaryMetaText}>
+              {summary.liveApplications} live · {summary.totalApplications} total
+            </Text>
+          </View>
+
+          <View style={styles.luck}>
+            <DonutGauge value={summary.allotmentRate ?? 0} size={64} thickness={7}>
+              {/* An em dash rather than 0%: nothing decided yet is a different
+                  statement from never having been allotted. */}
+              <Text style={styles.luckValue}>
+                {summary.allotmentRate === null
+                  ? '—'
+                  : `${Math.round(summary.allotmentRate * 100)}%`}
+              </Text>
+            </DonutGauge>
+            <Text style={styles.luckLabel}>Allotment luck</Text>
           </View>
         </View>
-      </Animated.View>
+      </Card>
 
-      {/* ---- headline stats ---------------------------------------------- */}
-      <Animated.View
-        entering={FadeInDown.delay(motion.stagger).duration(motion.base)}
-        style={styles.grid}
-      >
-        <StatTile
-          label="Money blocked"
-          value={formatInrCompact(summary.amountBlocked)}
-          hint={`${summary.liveApplications} live application(s)`}
-          icon="wallet"
-        />
-        <StatTile
-          label="Allotment rate"
-          icon="pie"
-          value={
-            <View style={styles.gaugeRow}>
-              <DonutGauge value={summary.allotmentRate ?? 0} size={58} thickness={7}>
-                <Text style={styles.gaugeText}>
-                  {summary.allotmentRate === null
-                    ? '—'
-                    : `${Math.round(summary.allotmentRate * 100)}%`}
-                </Text>
-              </DonutGauge>
-            </View>
-          }
-          hint={
-            summary.allotmentRate === null
-              ? 'No results yet'
-              : `${summary.allottedApplications} of ${summary.decidedApplications} decided`
-          }
-        />
-        <StatTile
-          label="Realised P&L"
-          value={formatInrCompact(summary.realisedPnl)}
-          tone={summary.realisedPnl > 0 ? 'good' : summary.realisedPnl < 0 ? 'bad' : 'neutral'}
-          hint="From shares you have sold"
-          icon="savings"
-        />
-        <StatTile
-          label="Unrealised"
-          value={formatInrCompact(summary.unrealisedPnl)}
-          tone={summary.unrealisedPnl > 0 ? 'good' : summary.unrealisedPnl < 0 ? 'bad' : 'neutral'}
-          hint="Allotted but still held"
-          icon="ipos"
-        />
-      </Animated.View>
+      <ErrorText>{ipos.error instanceof Error ? ipos.error.message : null}</ErrorText>
+      {staleWarning && <Banner tone="warning">{staleWarning}</Banner>}
 
-      {/* ---- open right now ---------------------------------------------- */}
-      {openNow.length > 0 && (
-        <>
-          <SectionHeader title="Open right now" />
-          {openNow.map((ipo, i) => (
-            <ListRow
-              key={ipo.id}
-              index={i}
-              accent={colors.success}
-              title={ipo.company_name}
-              subtitle={`Closes ${
-                ipo.close_date
-                  ? new Date(ipo.close_date).toLocaleDateString('en-IN', {
-                      day: 'numeric',
-                      month: 'short',
-                    })
-                  : '—'
-              }`}
-              right={<Badge label="Open" tone="success" />}
-              onPress={() => router.push(`/ipos/${ipo.id}`)}
-            />
-          ))}
-        </>
-      )}
+      <Segmented
+        value={tab}
+        onChange={setTab}
+        options={TABS.map((t) => ({ ...t, count: grouped[t.key].length }))}
+      />
 
-      {/* ---- by account --------------------------------------------------- */}
-      {summary.byAccount.length > 0 && (
-        <>
-          <SectionHeader title="By account" />
-          <Card variant="glass" padded={false}>
-            {summary.byAccount.map((account, i) => (
-              <View
-                key={account.accountId}
-                style={[
-                  styles.accountRow,
-                  i === summary.byAccount.length - 1 && styles.accountRowLast,
-                ]}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.accountName}>{account.nickname}</Text>
-                  <Text style={styles.accountHint}>
-                    {account.applications} application(s)
-                  </Text>
-                </View>
-                {/* Fixed width so the rupee figures line up down the column —
-                    tabular-nums is iOS-only, so the container does the work. */}
-                <Text
-                  style={[
-                    styles.accountPnl,
-                    {
-                      color:
-                        account.pnl > 0
-                          ? colors.success
-                          : account.pnl < 0
-                            ? colors.danger
-                            : colors.textMuted,
-                    },
-                  ]}
-                  numberOfLines={1}
-                >
-                  {formatInr(account.pnl)}
-                </Text>
-              </View>
-            ))}
-          </Card>
-        </>
-      )}
-
-      {summary.totalApplications === 0 && (
+      {visible.length === 0 ? (
         <EmptyState
-          icon="empty"
-          title="Nothing tracked yet"
-          body="Add a demat account, then record your first IPO application to see your numbers here."
+          icon="ipos"
+          title={`Nothing ${tab === 'open' ? 'open right now' : `in ${tab}`}`}
+          body="Synced IPOs appear here automatically. You can also add one by hand at any time."
         />
-      )}
+      ) : (
+        visible.map((ipo, i) => {
+          const badge = BUCKET_BADGE[tab];
+          const metric = trailingMetric(ipo, tab);
+          const metricColor =
+            metric.tone === 'good'
+              ? colors.success
+              : metric.tone === 'bad'
+                ? colors.danger
+                : colors.text;
+          const gmpMetric = gmpFigure(gmpByIpo.get(ipo.id), tab);
+          const gmpColor =
+            gmpMetric?.tone === 'good'
+              ? colors.success
+              : gmpMetric?.tone === 'bad'
+                ? colors.danger
+                : colors.text;
 
-      <Pressable style={styles.settingsRow} onPress={() => router.push('/settings')}>
-        <Icon name="settings" size={18} color={colors.textMuted} />
-        <Text style={styles.settingsText}>Settings</Text>
-        <Icon name="chevron" size={18} color={colors.textFaint} />
-      </Pressable>
+          return (
+            <Animated.View
+              key={ipo.id}
+              entering={FadeInDown.delay(i * motion.stagger).duration(motion.base)}
+            >
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={ipo.company_name}
+                onPress={() => router.push(`/ipos/${ipo.id}`)}
+              >
+                <Card elevation={1}>
+                  <View style={styles.head}>
+                    <Avatar name={ipo.company_name} size={40} />
+                    <View style={styles.headText}>
+                      <Text style={styles.name} numberOfLines={1}>
+                        {ipo.company_name}
+                      </Text>
+                      <Text style={styles.symbol} numberOfLines={1}>
+                        {ipo.symbol} · {ipo.exchange}
+                      </Text>
+                    </View>
+                    {ipo.segment === 'SME' ? (
+                      <Badge label="SME" tone="navy" variant="outlined" size="small" />
+                    ) : null}
+                    <Badge label={badge.label} tone={badge.tone} variant="filled" size="small" />
+                  </View>
+
+                  <View style={styles.figures}>
+                    <View style={styles.figure}>
+                      <Text style={styles.figureLabel}>Price band</Text>
+                      <Text style={styles.figureValue} numberOfLines={1}>
+                        {priceBand(ipo)}
+                      </Text>
+                    </View>
+                    <View style={styles.figure}>
+                      <Text
+                        style={[
+                          styles.figureLabel,
+                          gmpMetric ? undefined : styles.alignRight,
+                        ]}
+                      >
+                        {metric.label}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.figureValue,
+                          gmpMetric ? undefined : styles.alignRight,
+                          { color: metricColor },
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {metric.value}
+                      </Text>
+                    </View>
+                    {gmpMetric && (
+                      <View style={styles.figure}>
+                        <Text style={[styles.figureLabel, styles.alignRight]}>
+                          {gmpMetric.label}
+                        </Text>
+                        <Text
+                          style={[styles.figureValue, styles.alignRight, { color: gmpColor }]}
+                          numberOfLines={1}
+                        >
+                          {gmpMetric.value}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <Text style={styles.dateNote}>{dateNote(ipo, tab)}</Text>
+                </Card>
+              </Pressable>
+            </Animated.View>
+          );
+        })
+      )}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  hero: {
-    alignItems: 'center',
-    paddingTop: spacing.xxl,
-    paddingBottom: spacing.xl,
-    overflow: 'hidden',
-  },
-  halo: {
-    position: 'absolute',
-    top: -40,
-    width: 320,
-    height: 320,
-    borderRadius: 160,
-    opacity: 0.5,
-  },
-  heroLabel: { ...type.label, color: colors.textMuted, marginBottom: spacing.sm },
-  heroValue: { ...type.hero, textAlign: 'center' },
-  heroMeta: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
-  grid: {
+  summary: { marginBottom: spacing.lg },
+  summaryRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.lg },
+  summaryFigure: { flex: 1, minWidth: 0 },
+  summaryLabel: { ...type.label, color: colors.textMuted, fontSize: 10.5 },
+  summaryValue: { ...type.hero, color: colors.text, marginTop: spacing.xs },
+  summaryMetaText: { ...type.caption, color: colors.textMuted, marginTop: spacing.xs },
+  luck: { alignItems: 'center', gap: spacing.xs },
+  luckValue: { ...type.bodyStrong, color: colors.text, fontSize: 14 },
+  luckLabel: { ...type.caption, color: colors.textMuted, fontSize: 11 },
+  head: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  headText: { flex: 1, minWidth: 0 },
+  name: { ...type.heading, color: colors.text },
+  symbol: { ...type.caption, color: colors.textMuted, marginTop: 1 },
+  figures: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    alignItems: 'flex-start',
     gap: spacing.md,
-    marginTop: spacing.lg,
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
   },
-  gaugeRow: { alignItems: 'flex-start', marginTop: spacing.sm },
-  gaugeText: { ...type.bodyStrong, color: colors.text, fontSize: 15 },
-  accountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderSoft,
-  },
-  accountRowLast: { borderBottomWidth: 0 },
-  accountName: { ...type.bodyStrong, color: colors.text },
-  accountHint: { ...type.caption, color: colors.textFaint, marginTop: 2 },
-  accountPnl: { ...type.bodyStrong, fontSize: 15, minWidth: 96, textAlign: 'right' },
-  settingsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    marginTop: spacing.xl,
-    padding: spacing.lg,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.borderSoft,
-  },
-  settingsText: { ...type.body, color: colors.text, flex: 1 },
+  figure: { flex: 1, minWidth: 0 },
+  figureLabel: { ...type.caption, color: colors.textMuted, fontSize: 11 },
+  figureValue: { ...type.bodyStrong, color: colors.text, marginTop: 2 },
+  alignRight: { textAlign: 'right' },
+  dateNote: { ...type.caption, color: colors.textMuted, marginTop: spacing.sm },
 });

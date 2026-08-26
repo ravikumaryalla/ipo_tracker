@@ -37,24 +37,61 @@ export function SectionHeader({ title, action }: { title: string; action?: React
   );
 }
 
+/**
+ * Status pill. Doubles as the design system's Chip.
+ *
+ * `filled` is the design system's default and is what status chips in the
+ * mockups use; `tonal` is the pale-background treatment the app used
+ * throughout before, and stays the default so existing call sites are
+ * unchanged. Labels are only uppercased in the tonal treatment — a filled chip
+ * carries enough weight without it.
+ */
 export function Badge({
   label,
   tone = 'muted',
+  variant = 'tonal',
+  size = 'medium',
 }: {
   label: string;
-  tone?: 'muted' | 'success' | 'warning' | 'danger' | 'accent';
+  tone?: 'muted' | 'success' | 'warning' | 'danger' | 'accent' | 'info' | 'navy';
+  variant?: 'tonal' | 'filled' | 'outlined';
+  size?: 'small' | 'medium';
 }) {
+  // [pale fill, 600-weight hue for fills and rules, 900-weight hue for text].
+  // The second and third differ because the 600 hues all fail WCAG AA as text
+  // on their own pale fill — see the note beside the `*Text` tokens.
   const map = {
-    muted: [colors.surfaceRaised, colors.textMuted],
-    success: [colors.successSoft, colors.success],
-    warning: [colors.warningSoft, colors.warning],
-    danger: [colors.dangerSoft, colors.danger],
-    accent: [colors.accentSoft, colors.accentBright],
+    muted: [colors.surfaceAlt, colors.border, colors.text],
+    success: [colors.successSoft, colors.success, colors.successText],
+    warning: [colors.warningSoft, colors.warning, colors.warningText],
+    danger: [colors.dangerSoft, colors.danger, colors.dangerText],
+    accent: [colors.accentSoft, colors.accent, colors.accentText],
+    info: [colors.infoSoft, colors.info, colors.infoText],
+    navy: [colors.accentSoft, colors.navy, colors.navy],
   } as const;
-  const [bg, fg] = map[tone];
+  const [soft, hue, ink] = map[tone];
+
+  const box =
+    variant === 'filled'
+      ? { backgroundColor: hue, borderColor: hue }
+      : variant === 'outlined'
+        ? { backgroundColor: 'transparent', borderColor: hue }
+        : { backgroundColor: soft, borderColor: 'transparent' };
+  const fg =
+    variant === 'filled'
+      ? tone === 'muted'
+        ? colors.text
+        : colors.onAccent
+      : ink;
+
   return (
-    <View style={[styles.badge, { backgroundColor: bg, borderColor: fg + '33' }]}>
-      <Text style={[styles.badgeText, { color: fg }]}>{label.toUpperCase()}</Text>
+    <View style={[styles.badge, size === 'small' && styles.badgeSmall, box]}>
+      <Text
+        style={[styles.badgeText, size === 'small' && styles.badgeTextSmall, { color: fg }]}
+        numberOfLines={1}
+      >
+        {variant === 'tonal' ? label.toUpperCase() : label}
+      </Text>
     </View>
   );
 }
@@ -69,22 +106,34 @@ export function ErrorText({ children }: { children?: string | null }) {
   );
 }
 
+/** Inline callout. Doubles as the design system's Alert. */
 export function Banner({
   tone = 'warning',
+  title,
   children,
 }: {
-  tone?: 'warning' | 'danger' | 'info';
+  tone?: 'warning' | 'danger' | 'info' | 'success';
+  /** Optional bold first line, for alerts that need a headline. */
+  title?: string;
   children: React.ReactNode;
 }) {
-  const bg =
-    tone === 'danger' ? colors.dangerSoft : tone === 'info' ? colors.accentSoft : colors.warningSoft;
-  const fg =
-    tone === 'danger' ? colors.danger : tone === 'info' ? colors.accentBright : colors.warning;
-  const icon: IconName = tone === 'danger' ? 'warning' : tone === 'info' ? 'info' : 'warning';
+  // The icon carries the tone at full saturation; the text uses the darker
+  // shade, because the 600 hues are unreadable on their own pale fill.
+  const map = {
+    warning: [colors.warningSoft, colors.warning, colors.warningText, 'warning'],
+    danger: [colors.dangerSoft, colors.danger, colors.dangerText, 'warning'],
+    info: [colors.infoSoft, colors.info, colors.infoText, 'info'],
+    success: [colors.successSoft, colors.success, colors.successText, 'check'],
+  } as const;
+  const [bg, hue, ink, icon] = map[tone];
+
   return (
-    <View style={[styles.banner, { backgroundColor: bg, borderColor: fg + '2E' }]}>
-      <Icon name={icon} size={18} color={fg} />
-      <Text style={[styles.bannerText, { color: fg }]}>{children}</Text>
+    <View style={[styles.banner, { backgroundColor: bg }]}>
+      <Icon name={icon as IconName} size={18} color={hue} />
+      <View style={styles.bannerBody}>
+        {title ? <Text style={[styles.bannerTitle, { color: ink }]}>{title}</Text> : null}
+        <Text style={[styles.bannerText, { color: ink }]}>{children}</Text>
+      </View>
     </View>
   );
 }
@@ -108,9 +157,9 @@ export function AllotmentCheckResults({
     warning: colors.warning,
   };
   const textColor: Record<AllotmentCheckResultTone, string> = {
-    success: colors.success,
+    success: colors.successText,
     neutral: colors.textMuted,
-    warning: colors.warning,
+    warning: colors.warningText,
   };
 
   return (
@@ -170,7 +219,10 @@ export function Skeleton({ height = 16, width = '100%' as number | string, style
   return (
     <Animated.View
       style={[
-        { height, width: width as number, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
+        // bgDeep, not surfaceAlt: a skeleton sits on a white card and
+        // surfaceAlt is the same value as the app background, which leaves
+        // nothing to shimmer against.
+        { height, width: width as number, borderRadius: radius.sm, backgroundColor: colors.bgDeep },
         style,
         animated,
       ]}
@@ -197,7 +249,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.xl,
     marginBottom: spacing.md,
   },
-  sectionTitle: { ...type.label, color: colors.textFaint },
+  sectionTitle: { ...type.label, color: colors.textMuted },
   badge: {
     borderRadius: radius.pill,
     borderWidth: 1,
@@ -205,29 +257,30 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     alignSelf: 'flex-start',
   },
+  badgeSmall: { paddingHorizontal: spacing.sm + 2, paddingVertical: 3 },
   badgeText: { ...type.label, fontSize: 10, letterSpacing: 0.8 },
+  badgeTextSmall: { fontSize: 9.5, letterSpacing: 0.4 },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: spacing.md,
     backgroundColor: colors.dangerSoft,
-    borderWidth: 1,
-    borderColor: colors.danger + '33',
-    borderRadius: radius.lg,
+    borderRadius: radius.md,
     padding: spacing.lg,
     marginBottom: spacing.md,
   },
-  errorText: { ...type.caption, color: colors.danger, flex: 1, fontSize: 13 },
+  errorText: { ...type.caption, color: colors.dangerText, flex: 1, fontSize: 13 },
   banner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: spacing.md,
-    borderRadius: radius.lg,
-    borderWidth: 1,
+    borderRadius: radius.md,
     padding: spacing.lg,
     marginBottom: spacing.md,
   },
-  bannerText: { ...type.caption, flex: 1, fontSize: 13 },
+  bannerBody: { flex: 1, gap: 2 },
+  bannerTitle: { ...type.bodyStrong, fontSize: 13 },
+  bannerText: { ...type.caption, fontSize: 13 },
   resultList: {
     backgroundColor: colors.surfaceAlt,
     borderRadius: radius.lg,
