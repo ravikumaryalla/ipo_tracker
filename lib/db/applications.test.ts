@@ -49,6 +49,7 @@ function row(patch: Partial<ApplicationPnl>): ApplicationPnl {
     kfintech_company_id: null,
     bigshare_company_id: null,
     mufg_company_id: null,
+    listing_gain: null,
     ...patch,
   };
 }
@@ -153,6 +154,43 @@ describe('summarise', () => {
     ]);
     expect(s.realisedPnl).toBe(4500);
     expect(s.unrealisedPnl).toBe(-1200);
+  });
+
+  describe('listing gains', () => {
+    it('sums hand-entered listing gains across allotted rows, string numerics included', () => {
+      const s = summarise([
+        row({ id: 'a1', status: 'ALLOTTED', listing_gain: 2500 }),
+        row({ id: 'a2', status: 'PARTIAL', listing_gain: '800.00' as unknown as number }),
+      ]);
+      expect(s.listingGains).toBe(3300);
+      expect(s.listingGainsRecorded).toBe(2);
+    });
+
+    it('ignores rows with no value recorded, but counts a recorded zero', () => {
+      const s = summarise([
+        row({ id: 'a1', status: 'ALLOTTED', listing_gain: null }),
+        row({ id: 'a2', status: 'ALLOTTED', listing_gain: 0 }),
+      ]);
+      expect(s.listingGains).toBe(0);
+      expect(s.listingGainsRecorded).toBe(1);
+    });
+
+    it('lets a listing loss pull the total negative', () => {
+      const s = summarise([
+        row({ id: 'a1', status: 'ALLOTTED', listing_gain: 1000 }),
+        row({ id: 'a2', status: 'ALLOTTED', listing_gain: -1600 }),
+      ]);
+      expect(s.listingGains).toBe(-600);
+      expect(s.listingGainsRecorded).toBe(2);
+    });
+
+    it('excludes a value left behind on a row that is no longer allotted', () => {
+      const s = summarise([
+        row({ id: 'a1', status: 'NOT_ALLOTTED', listing_gain: 5000 }),
+      ]);
+      expect(s.listingGains).toBe(0);
+      expect(s.listingGainsRecorded).toBe(0);
+    });
   });
 
   it('groups by account and sorts the best performer first', () => {

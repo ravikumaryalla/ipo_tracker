@@ -80,6 +80,7 @@ export async function updateApplicationOutcome(
     shares_allotted?: number;
     sell_price?: number | null;
     sold_at?: string | null;
+    listing_gain?: number | null;
   },
 ): Promise<IpoApplication> {
   const { data, error } = await supabase
@@ -175,6 +176,14 @@ export type PortfolioSummary = {
   allotmentRate: number | null;
   realisedPnl: number;
   unrealisedPnl: number;
+  /**
+   * Sum of the listing gains the user has entered by hand across allotted
+   * applications. User-owned and kept apart from realisedPnl/unrealisedPnl —
+   * never fold it into those.
+   */
+  listingGains: number;
+  /** How many allotted applications have a listing gain entered. */
+  listingGainsRecorded: number;
   byAccount: { accountId: string; nickname: string; applications: number; pnl: number }[];
 };
 
@@ -196,6 +205,8 @@ export function summarise(rows: ApplicationPnl[]): PortfolioSummary {
   let allotted = 0;
   let realisedPnl = 0;
   let unrealisedPnl = 0;
+  let listingGains = 0;
+  let listingGainsRecorded = 0;
 
   for (const row of rows) {
     amountBlocked += Number(row.amount_currently_blocked) || 0;
@@ -205,6 +216,13 @@ export function summarise(rows: ApplicationPnl[]): PortfolioSummary {
     if (row.status === 'APPLIED') live += 1;
     if (decidedStatuses.includes(row.status)) decided += 1;
     if (allottedStatuses.includes(row.status)) allotted += 1;
+
+    // Only a value on a still-allotted row counts, and `!= null` rather than
+    // truthiness so a recorded 0 (flat listing) is kept.
+    if (allottedStatuses.includes(row.status) && row.listing_gain != null) {
+      listingGains += Number(row.listing_gain) || 0;
+      listingGainsRecorded += 1;
+    }
 
     const entry = byAccount.get(row.demat_account_id) ?? {
       nickname: row.account_nickname,
@@ -225,6 +243,8 @@ export function summarise(rows: ApplicationPnl[]): PortfolioSummary {
     allotmentRate: decided > 0 ? allotted / decided : null,
     realisedPnl,
     unrealisedPnl,
+    listingGains,
+    listingGainsRecorded,
     byAccount: [...byAccount.entries()]
       .map(([accountId, v]) => ({ accountId, ...v }))
       .sort((a, b) => b.pnl - a.pnl),

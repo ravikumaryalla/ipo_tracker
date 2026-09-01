@@ -3,8 +3,8 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Badge, Button, Card, ErrorText, Field, Loading, Screen } from '../../components/ui';
 import { colors, formatInr, radius, spacing, type } from '../../constants/theme';
@@ -45,7 +45,16 @@ export default function ApplicationDetail() {
   const [status, setStatus] = useState<ApplicationStatus | null>(null);
   const [sharesAllotted, setSharesAllotted] = useState('');
   const [sellPrice, setSellPrice] = useState('');
+  const [listingGain, setListingGain] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  // Seed the listing-gain field from the stored value once the row loads. The
+  // single "Save outcome" button treats an empty field as "clear", so an
+  // unseeded field would silently wipe a recorded gain the moment the user
+  // reopened this card to change something else.
+  useEffect(() => {
+    setListingGain(application?.listing_gain != null ? String(application.listing_gain) : '');
+  }, [application?.id]);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -65,11 +74,22 @@ export default function ApplicationDetail() {
         throw new Error('Enter a valid sale price.');
       }
 
+      const rawGain = listingGain.trim().replace(/[₹,\s]/g, '');
+      let gain: number | null = null;
+      if (rawGain !== '' && rawGain !== '-') {
+        gain = Number(rawGain);
+        if (Number.isNaN(gain)) throw new Error('Enter a valid listing gain amount.');
+      }
+      const keepsGain = nextStatus === 'ALLOTTED' || nextStatus === 'PARTIAL';
+
       return updateApplicationOutcome(id!, {
         status: nextStatus,
         shares_allotted: shares,
         sell_price: sell,
         sold_at: sell !== null ? new Date().toISOString() : null,
+        // Clear any recorded gain when the outcome is no longer an allotment,
+        // so a value the user can no longer see can't linger on the row.
+        listing_gain: keepsGain ? gain : null,
       });
     },
     onSuccess: async () => {
@@ -77,6 +97,7 @@ export default function ApplicationDetail() {
       setStatus(null);
       setSharesAllotted('');
       setSellPrice('');
+      setListingGain('');
     },
     onError: (e) => setError(e instanceof Error ? e.message : 'Could not save.'),
   });
@@ -148,6 +169,29 @@ export default function ApplicationDetail() {
           {application.sell_price !== null && (
             <Row label="Sold at" value={formatInr(Number(application.sell_price))} />
           )}
+          {application.listing_gain != null ? (
+            <View style={styles.row}>
+              <Text style={styles.label}>Listing gain (entered)</Text>
+              <Text
+                style={[
+                  styles.value,
+                  {
+                    color:
+                      Number(application.listing_gain) > 0
+                        ? colors.success
+                        : Number(application.listing_gain) < 0
+                          ? colors.danger
+                          : colors.text,
+                  },
+                ]}
+              >
+                {Number(application.listing_gain) >= 0 ? '+' : ''}
+                {formatInr(Number(application.listing_gain))}
+              </Text>
+            </View>
+          ) : (
+            <Row label="Listing gain (entered)" value="—" />
+          )}
           <View style={styles.row}>
             <Text style={styles.label}>
               {application.sell_price !== null ? 'Realised P&L' : 'Unrealised P&L'}
@@ -198,6 +242,14 @@ export default function ApplicationDetail() {
               onChangeText={setSellPrice}
               keyboardType="decimal-pad"
               hint="Fill this in once you have sold, to move the P&L from unrealised to realised."
+            />
+            <Field
+              label="Listing gain (₹)"
+              value={listingGain}
+              onChangeText={setListingGain}
+              keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+              placeholder="Amount you booked on this allotment"
+              hint="Enter a minus sign for a listing loss. Leave blank if not booked yet."
             />
           </>
         )}

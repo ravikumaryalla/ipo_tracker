@@ -126,6 +126,8 @@ export type IpoApplication = {
   allotment_checked_at: string | null;
   sell_price: number | null;
   sold_at: string | null;
+  /** User-entered rupee gain/loss booked on this allotment. Null until recorded; negative = listing loss. */
+  listing_gain: number | null;
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -165,6 +167,8 @@ export type ApplicationPnl = {
   kfintech_company_id: string | null;
   bigshare_company_id: string | null;
   mufg_company_id: string | null;
+  /** User-entered rupee gain/loss booked on this allotment. Null until recorded; negative = listing loss. */
+  listing_gain: number | null;
 };
 
 export type CredentialHistoryRow = {
@@ -189,7 +193,10 @@ export type PushTokenRow = {
   id: string;
   user_id: string;
   token: string;
+  platform: string | null;
+  last_seen_at: string;
   created_at: string;
+  updated_at: string;
 };
 
 /**

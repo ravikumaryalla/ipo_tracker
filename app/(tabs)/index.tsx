@@ -6,8 +6,14 @@
  * That header carries the two numbers that bear on the decision this screen
  * exists for — whether to act on something that is open right now: how much
  * money is already tied up, and how often applying has actually worked out.
- * Net P&L is a retrospective figure and deliberately is not here; it is on
- * Profile, alongside the per-account breakdown that explains it.
+ * The view-computed net P&L is a retrospective figure and deliberately is not
+ * here; it is on Profile, alongside the per-account breakdown that explains it.
+ *
+ * The one retrospective figure that does belong here is listing gains: the
+ * payoff of the thing this screen is about — whether applying pays off — and a
+ * compact, user-owned total the user typed in per allotment, not derived from
+ * synced market prices. It sits below the fold in the same card and only shows
+ * once at least one has been recorded.
  *
  * Profile shows the same allotment rate in more detail. The duplication is
  * intended: this one is a glance, that one carries the sentence that explains
@@ -218,7 +224,9 @@ export default function Home() {
       {/* ---- portfolio header --------------------------------------------
           The two figures that bear on "should I act on something open right
           now?": how much is already tied up, and how often applying actually
-          works out. Net P&L is retrospective and lives on Profile instead. */}
+          works out. The view-computed net P&L is retrospective and lives on
+          Profile instead; listing gains — a user-entered total — is the one
+          payoff figure kept here, below the fold. */}
       <Card elevation={1} style={styles.summary}>
         <View style={styles.summaryRow}>
           <View style={styles.summaryFigure}>
@@ -248,6 +256,31 @@ export default function Home() {
             <Text style={styles.luckLabel}>Allotment luck</Text>
           </View>
         </View>
+
+        {summary.listingGainsRecorded > 0 && (
+          <View style={styles.summarySecondary}>
+            <Text style={styles.summaryLabel}>LISTING GAINS</Text>
+            <AnimatedNumber
+              value={summary.listingGains}
+              format={(n) => (n > 0 ? '+' : '') + formatInr(n)}
+              style={[
+                styles.summarySecondaryValue,
+                {
+                  color:
+                    summary.listingGains > 0
+                      ? colors.success
+                      : summary.listingGains < 0
+                        ? colors.danger
+                        : colors.text,
+                },
+              ]}
+            />
+            <Text style={styles.summaryMetaText}>
+              across {summary.listingGainsRecorded} allotment
+              {summary.listingGainsRecorded === 1 ? '' : 's'}
+            </Text>
+          </View>
+        )}
       </Card>
 
       <ErrorText>{ipos.error instanceof Error ? ipos.error.message : null}</ErrorText>
@@ -370,6 +403,14 @@ const styles = StyleSheet.create({
   summaryLabel: { ...type.label, color: colors.textMuted, fontSize: 10.5 },
   summaryValue: { ...type.hero, color: colors.text, marginTop: spacing.xs },
   summaryMetaText: { ...type.caption, color: colors.textMuted, marginTop: spacing.xs },
+  summarySecondary: {
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  // type.stat, not type.hero — AMOUNT BLOCKED stays the one hero number here.
+  summarySecondaryValue: { ...type.stat, color: colors.text, marginTop: spacing.xs },
   luck: { alignItems: 'center', gap: spacing.xs },
   luckValue: { ...type.bodyStrong, color: colors.text, fontSize: 14 },
   luckLabel: { ...type.caption, color: colors.textMuted, fontSize: 11 },
