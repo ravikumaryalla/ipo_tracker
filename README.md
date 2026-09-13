@@ -123,6 +123,21 @@ eas build -p android --profile preview
 Biometric unlock and screenshot blocking only behave correctly in a real build —
 verify those on the APK, not in Expo Go.
 
+### Push notifications (Android)
+
+Expo delivers to Android only through Firebase Cloud Messaging, so the allotment-result
+push needs FCM v1 set up once:
+
+1. `google-services.json` (Firebase console → Android app for `com.ravikumar.ipotracker`)
+   lives at the repo root and is referenced by `app.json` → `android.googleServicesFile`.
+   **It must be committed** — EAS Build only uploads git-tracked files, and its contents
+   are not secret (they ship inside every APK).
+2. Upload the Firebase **service-account private key** (a separate JSON, kept out of the
+   repo) via `eas credentials` → Android → *Google Service Account* → *FCM V1*.
+3. Rebuild (`eas build -p android --profile preview`) — remote push does not work in
+   Expo Go on Android. Verify by sending a test push to a `push_tokens` row via
+   `https://exp.host/--/api/v2/push/send`.
+
 ---
 
 ## Testing

@@ -29,22 +29,31 @@ Notifications.setNotificationHandler({
   }),
 });
 
+/**
+ * Create the Android notification channels. Idempotent and prompt-free, so it
+ * is safe to call from the silent registration path too — a push delivered to
+ * a channel id that was never created (the server always targets
+ * 'allotment-results') is dropped or mis-bucketed by Android.
+ */
+async function ensureAndroidChannels(): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  await Notifications.setNotificationChannelAsync('ipo-reminders', {
+    name: 'IPO reminders',
+    importance: Notifications.AndroidImportance.DEFAULT,
+  });
+  await Notifications.setNotificationChannelAsync('allotment-results', {
+    name: 'Allotment results',
+    importance: Notifications.AndroidImportance.HIGH,
+  });
+}
+
 export async function requestNotificationPermission(): Promise<boolean> {
   // Web has no local notification scheduling. Reporting "no permission" here is
   // enough: syncReminders() already bails out on false, so the settings screen
   // says "nothing to schedule" instead of crashing in scheduleNotificationAsync.
   if (Platform.OS === 'web') return false;
 
-  if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('ipo-reminders', {
-      name: 'IPO reminders',
-      importance: Notifications.AndroidImportance.DEFAULT,
-    });
-    await Notifications.setNotificationChannelAsync('allotment-results', {
-      name: 'Allotment results',
-      importance: Notifications.AndroidImportance.HIGH,
-    });
-  }
+  await ensureAndroidChannels();
 
   const existing = await Notifications.getPermissionsAsync();
   if (existing.granted) return true;
@@ -109,6 +118,33 @@ export async function isPushEnabled(): Promise<boolean> {
 }
 
 /**
+ * Register this device's push token without ever prompting.
+ *
+ * Runs on every sign-in so a reinstall or a second phone starts receiving
+ * allotment pushes without the user having to find the Profile toggle again.
+ * If the OS permission was never granted it stays a no-op — the first prompt
+ * belongs to an explicit tap on that toggle (enablePushNotifications), not to
+ * app launch.
+ */
+export async function registerPushTokenSilently(userId: string): Promise<void> {
+  if (Platform.OS === 'web') return;
+
+  // Channels are created here rather than only in requestNotificationPermission
+  // (which the user reaches only via the Profile toggle) so a device that had
+  // permission granted some other way still has 'allotment-results' to receive
+  // into. Prompt-free, so it does not violate the "never prompt on launch" rule.
+  await ensureAndroidChannels();
+
+  const existing = await Notifications.getPermissionsAsync();
+  if (!existing.granted) return;
+
+  const token = await currentPushToken();
+  if (!token) return;
+
+  await upsertPushToken(userId, token, { platform: Platform.OS });
+}
+
+/**
  * Register this device for allotment-result push notifications. Requires the
  * same OS permission as local reminders, plus a device that can actually
  * receive a push (a simulator/emulator without Google Play services cannot).
@@ -119,7 +155,7 @@ export async function enablePushNotifications(userId: string): Promise<boolean> 
   const token = await currentPushToken();
   if (!token) return false;
 
-  await upsertPushToken(userId, token);
+  await upsertPushToken(userId, token, { platform: Platform.OS });
   return true;
 }
 

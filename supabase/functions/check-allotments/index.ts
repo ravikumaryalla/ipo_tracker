@@ -66,6 +66,12 @@ import {
   parseOcrAnswer,
   shouldStopTryingBigshare,
 } from './bigshare.ts';
+import {
+  chunkMessages,
+  deviceIsGone,
+  type ExpoPushMessage,
+  parseSendTickets,
+} from './expoPush.ts';
 import { encryptMufgToken, mufgStatusFor, parseMufgAllotmentBody } from './mufg.ts';
 import {
   type AllotmentOutcome,
@@ -674,20 +680,26 @@ const OUTCOME_TEXT: Record<AllotmentOutcome, string> = {
   NOT_ALLOTTED: 'Not allotted',
 };
 
+type PushSummary = { sent: number; failed: number; pruned: number };
+
 /**
  * Best-effort: a push-delivery hiccup (Expo's service down, a stale/revoked
- * token) must never fail the check itself — the row is already written by
- * the time this runs.
+ * token) must never fail the check itself — the row is already written by the
+ * time this runs. Sends in chunks of 100 (Expo's per-request cap), drops
+ * push_tokens rows Expo reports as dead, and returns a tally the scheduled
+ * sweep folds into sync_log — the on-demand path ignores it.
  */
 async function sendAllotmentPushes(
   client: SupabaseClient,
   results: CheckResult[],
-): Promise<void> {
+): Promise<PushSummary> {
+  const summary: PushSummary = { sent: 0, failed: 0, pruned: 0 };
+
   const resolved = results.filter(
     (r): r is CheckResult & { status: AllotmentOutcome } =>
       r.outcome === 'resolved' && !!r.status,
   );
-  if (resolved.length === 0) return;
+  if (resolved.length === 0) return summary;
 
   try {
     const userIds = [...new Set(resolved.map((r) => r.row.userId))];
@@ -704,29 +716,69 @@ async function sendAllotmentPushes(
       ]);
     }
 
-    const messages = resolved.flatMap((r) =>
+    const messages: ExpoPushMessage[] = resolved.flatMap((r) =>
       (tokensByUser.get(r.row.userId) ?? []).map((token) => ({
         to: token,
         title: 'Allotment result is out',
         body: `${r.row.companyName}: ${OUTCOME_TEXT[r.status]}`,
-        sound: 'default',
+        sound: 'default' as const,
         channelId: 'allotment-results',
         data: { applicationId: r.row.id },
       })),
     );
-    if (messages.length === 0) return;
+    if (messages.length === 0) return summary;
 
-    await fetch(EXPO_PUSH_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify(messages),
-    });
+    const dead = new Set<string>();
+    for (const chunk of chunkMessages(messages)) {
+      try {
+        const res = await fetch(EXPO_PUSH_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify(chunk),
+        });
+        const tickets = parseSendTickets(await res.json().catch(() => null));
+        // No tickets back means Expo rejected the whole chunk (bad body, auth).
+        if (tickets.length === 0) {
+          summary.failed += chunk.length;
+          continue;
+        }
+        const chunkDead = new Set<string>();
+        let anyOk = false;
+        tickets.forEach((ticket, i) => {
+          if (ticket.status === 'ok') {
+            summary.sent += 1;
+            anyOk = true;
+          } else {
+            summary.failed += 1;
+            if (deviceIsGone(ticket) && chunk[i]) chunkDead.add(chunk[i].to);
+          }
+        });
+        // Only prune from a chunk that delivered at least one message. A chunk
+        // where every ticket failed is far likelier a misconfigured FCM/APNs
+        // credential — which reports every token as DeviceNotRegistered — than
+        // 100 genuinely dead devices, and pruning it would empty push_tokens
+        // and keep doing so on every sweep.
+        if (anyOk) for (const t of chunkDead) dead.add(t);
+      } catch {
+        summary.failed += chunk.length;
+      }
+    }
+
+    if (dead.size > 0) {
+      const { error } = await client
+        .from('push_tokens')
+        .delete()
+        .in('token', [...dead]);
+      if (!error) summary.pruned = dead.size;
+    }
   } catch {
     // Never let a push failure surface as a check failure.
   }
+
+  return summary;
 }
 
 /**
@@ -872,6 +924,7 @@ Deno.serve(async (req) => {
   let checked = 0;
   let resolved = 0;
   const errors: string[] = [];
+  let push: PushSummary = { sent: 0, failed: 0, pruned: 0 };
 
   try {
     const nowIso = new Date().toISOString();
@@ -886,21 +939,34 @@ Deno.serve(async (req) => {
         errors.push(result.message);
     }
 
-    await sendAllotmentPushes(client, results);
+    push = await sendAllotmentPushes(client, results);
   } catch (e) {
     ok = false;
     errors.push(e instanceof Error ? e.message : String(e));
   }
+
+  const base =
+    errors.length > 0
+      ? `${checked} checked, ${resolved} resolved, ${errors.length} failed: ${errors.slice(0, 3).join('; ')}`
+      : `${checked} checked, ${resolved} resolved`;
+  // Always leave a trace when there was something to notify about: a run that
+  // resolved rows but sent nothing means no device is registered (or the push
+  // path is broken), and a silent sync_log is how that stayed hidden before.
+  const pushNote =
+    push.sent + push.failed > 0
+      ? `; push ${push.sent} sent` +
+        (push.failed > 0 ? `, ${push.failed} failed` : '') +
+        (push.pruned > 0 ? `, ${push.pruned} pruned` : '')
+      : resolved > 0
+        ? '; push 0 sent (no devices registered)'
+        : '';
 
   await client.from('sync_log').insert({
     // Covers both registrars now — see checkOne's dispatch by row.provider.
     provider: 'ALLOTMENT_CHECK',
     ok,
     rows_upserted: resolved,
-    message:
-      errors.length > 0
-        ? `${checked} checked, ${resolved} resolved, ${errors.length} failed: ${errors.slice(0, 3).join('; ')}`
-        : `${checked} checked, ${resolved} resolved`,
+    message: base + pushNote,
   });
 
   return new Response(

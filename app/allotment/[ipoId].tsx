@@ -7,12 +7,15 @@
  * lives in the query cache, and when nothing is pending any more the screen
  * shows the stored result rather than asking the registrar again.
  *
- * It is a `useQuery`, not a `useMutation`, for three reasons — it survives you
- * backing out mid-check, it caches so revisiting does not re-hit a registrar
- * (Bigshare's captcha path is rate-limited and paced behind a serial gate), and
- * `refetch()` is "Check again" for free.
+ * Accounts are checked one at a time and each result is rendered the moment it
+ * lands — see lib/useAllotmentCheck.ts, which owns the run. So the "By account"
+ * list is on screen for the whole check, filling in row by row, instead of
+ * being hidden behind a single spinner until the slowest account finishes. An
+ * account that fails gets a Retry on its own row, because re-checking the whole
+ * IPO to fix one unread captcha costs a fresh lookup on every account that
+ * already answered.
  */
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
@@ -30,9 +33,9 @@ import {
   Screen,
 } from '../../components/ui';
 import { colors, formatInr, radius, spacing, type } from '../../constants/theme';
-import { checkAllotmentsForIpo } from '../../lib/db/allotment';
 import { listApplications } from '../../lib/db/applications';
 import { type CheckSummary, describeRow, formatDateTime, summariseCheck } from '../../lib/status';
+import { useAllotmentCheck } from '../../lib/useAllotmentCheck';
 
 /** [pale ring, solid glyph fill, text on the ring]. */
 const HERO_TONE = {
@@ -79,40 +82,25 @@ function Hero({ summary }: { summary: CheckSummary }) {
 export default function AllotmentResult() {
   const { ipoId } = useLocalSearchParams<{ ipoId: string }>();
   const router = useRouter();
-  const queryClient = useQueryClient();
 
   const applications = useQuery({ queryKey: ['applications'], queryFn: listApplications });
   const mine = (applications.data ?? []).filter((a) => a.ipo_id === ipoId);
   const eligible = mine.filter((a) => a.status === 'APPLIED');
+  const first = mine[0];
 
-  const check = useQuery({
-    queryKey: ['allotment-check', ipoId],
+  const check = useAllotmentCheck({
+    ipoId: ipoId!,
+    applicationIds: eligible.map((a) => a.id),
+    ipo: {
+      kfintech_company_id: first?.kfintech_company_id ?? null,
+      bigshare_company_id: first?.bigshare_company_id ?? null,
+      mufg_company_id: first?.mufg_company_id ?? null,
+      registrar: first?.registrar ?? null,
+    },
     // Gated on the list having resolved, not just on `mine` being non-empty:
     // reading it mid-load would fire a check with no ids at all. bulk-update
     // has exactly that bug in its lazy `useState` initialiser.
     enabled: !applications.isLoading && eligible.length > 0,
-    staleTime: Infinity,
-    gcTime: 30 * 60 * 1000,
-    // A registrar failure must not silently cost a second lookup.
-    retry: false,
-    queryFn: async () => {
-      const first = mine[0];
-      const outcome = await checkAllotmentsForIpo(
-        ipoId!,
-        eligible.map((a) => a.id),
-        {
-          kfintech_company_id: first.kfintech_company_id,
-          bigshare_company_id: first.bigshare_company_id,
-          mufg_company_id: first.mufg_company_id,
-          registrar: first.registrar,
-        },
-      );
-      // Inside queryFn on purpose: react-query v5 dropped useQuery's onSuccess,
-      // and an effect would never fire if you backed out mid-check — which is
-      // exactly when the refreshed rows matter most.
-      await queryClient.invalidateQueries({ queryKey: ['applications'] });
-      return outcome;
-    },
   });
 
   if (applications.isLoading) return <Loading label="Loading applications…" />;
@@ -129,16 +117,30 @@ export default function AllotmentResult() {
     );
   }
 
-  const first = mine[0];
   const registrar = first.registrar ?? 'the registrar';
-  const bulk = check.data;
-  const live = bulk?.matched ? bulk.results : undefined;
-  const summary = summariseCheck(mine, live);
+  const progress = check.progress;
+  const unmatched = progress && !progress.matched;
+  const summary = summariseCheck(mine, progress?.accounts);
   const lastChecked = mine
     .map((a) => a.allotment_checked_at)
     .filter((v): v is string => v !== null)
     .sort()
     .at(-1);
+
+  const rows = mine.map((row) => {
+    const outcome = describeRow(
+      row,
+      progress?.accounts.find((a) => a.id === row.id),
+    );
+    return {
+      ...outcome,
+      // Never while something is already in flight: the registrar is asked one
+      // account at a time on purpose, and a second run racing the first is the
+      // thing the pacing exists to prevent.
+      onRetry:
+        outcome.retryable && !check.isRunning ? () => check.retry([row.id]) : undefined,
+    };
+  });
 
   return (
     <Screen>
@@ -150,51 +152,59 @@ export default function AllotmentResult() {
         </Text>
       </View>
 
-      <ErrorText>{check.error instanceof Error ? check.error.message : null}</ErrorText>
+      <ErrorText>{check.error?.message ?? null}</ErrorText>
 
-      {check.isFetching ? (
+      {check.isRunning ? (
         <Card>
-          <Loading label={`Checking with ${registrar}…`} />
-        </Card>
-      ) : (
-        <>
-          {bulk && !bulk.matched ? (
-            <Banner tone="warning" title="No result yet">
-              {bulk.message}
-            </Banner>
-          ) : (
-            <Hero summary={summary} />
-          )}
-
-          <Card>
-            <Text style={styles.section}>By account</Text>
-            <AllotmentCheckResults
-              results={mine.map((row) => describeRow(row, live?.find((l) => l.id === row.id)))}
-            />
-          </Card>
-
-          {eligible.length > 0 && (
-            <Button
-              title="Check again"
-              variant="secondary"
-              onPress={() => check.refetch()}
-              loading={check.isFetching}
-            />
-          )}
-
-          <Button
-            title="Record outcome manually"
-            variant="ghost"
-            onPress={() =>
-              router.push(
-                mine.length > 1
-                  ? `/applications/bulk-update?ipoId=${ipoId}`
-                  : `/applications/${first.id}`,
-              )
+          <Loading
+            label={
+              check.total > 0
+                ? `Checking with ${registrar}… (${check.done} of ${check.total})`
+                : `Checking with ${registrar}…`
             }
           />
-        </>
+        </Card>
+      ) : unmatched ? (
+        <Banner tone="warning" title="No result yet">
+          {progress.message}
+        </Banner>
+      ) : (
+        <Hero summary={summary} />
       )}
+
+      <Card>
+        <Text style={styles.section}>By account</Text>
+        <AllotmentCheckResults results={rows} />
+      </Card>
+
+      {check.failedIds.length > 0 && !check.isRunning && (
+        <Button
+          title={`Retry all failed (${check.failedIds.length})`}
+          variant="secondary"
+          onPress={() => check.retry(check.failedIds)}
+        />
+      )}
+
+      {eligible.length > 0 && (
+        <Button
+          title="Check again"
+          variant="secondary"
+          onPress={check.checkAgain}
+          loading={check.isRunning}
+        />
+      )}
+
+      <Button
+        title="Record outcome manually"
+        variant="ghost"
+        onPress={() =>
+          router.push(
+            mine.length > 1
+              ? `/applications/bulk-update?ipoId=${ipoId}`
+              : `/applications/${first.id}`,
+          )
+        }
+      />
     </Screen>
   );
 }

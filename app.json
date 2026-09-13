@@ -12,6 +12,8 @@
     },
     "android": {
       "package": "com.ravikumar.ipotracker",
+      "googleServicesFile": "./google-services.json",
+
       "adaptiveIcon": {
         "backgroundColor": "#0a47ad",
         "foregroundImage": "./assets/android-icon-foreground.png",

@@ -15,7 +15,7 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import 'react-native-get-random-values';
@@ -23,6 +23,8 @@ import 'react-native-get-random-values';
 import { Button, Loading } from '../components/ui';
 import { colors, fonts, spacing, type } from '../constants/theme';
 import { AuthProvider, useAuth } from '../lib/auth';
+import { useApplicationsRealtime } from '../lib/useApplicationsRealtime';
+import { usePushRegistration } from '../lib/usePushRegistration';
 import { VaultProvider, useVault } from '../lib/vault';
 
 // Hold the native splash until the fonts are ready. Without this the first
@@ -72,13 +74,19 @@ function isPersistable(queryKey: readonly unknown[]): boolean {
 }
 
 function RouteGate({ children }: { children: React.ReactNode }) {
-  const { session, loading: authLoading } = useAuth();
+  const { session, userId, loading: authLoading } = useAuth();
   const { status, refresh } = useVault();
   const [retrying, setRetrying] = useState(false);
   // Typed loosely: expo-router narrows this to the known route tuples, but we
   // only care about the first two path segments.
   const segments = useSegments() as string[];
   const router = useRouter();
+
+  // Keep this device's push token registered for the signed-in user, and
+  // live-update the applications list while the app is open. Both are no-ops
+  // until userId is non-null.
+  usePushRegistration(userId);
+  useApplicationsRealtime(userId);
 
   // Locking must actually make the plaintext unavailable. Without this the
   // decrypted rows would sit in the query cache and repopulate the UI the
@@ -91,16 +99,51 @@ function RouteGate({ children }: { children: React.ReactNode }) {
     }
   }, [status]);
 
-  // Tapping an allotment-result push opens that application directly. The
-  // route gate above still runs first (e.g. redirects to unlock if locked),
-  // this just decides where to land once past it.
-  useEffect(() => {
-    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+  // Tapping an allotment-result push opens that application directly. The route
+  // gate above still runs first (e.g. redirects to unlock if locked); this only
+  // decides where to land once past it. Two paths reach here — a tap while the
+  // app is already running (the listener) and a tap that cold-started it from
+  // killed (useLastNotificationResponse) — so a set of handled notification ids
+  // keeps a cold-start tap from firing a second time once the listener attaches.
+  const handledResponses = useRef<Set<string>>(new Set());
+  const routeFromResponse = useCallback(
+    (response: Notifications.NotificationResponse | null) => {
+      if (!response || !session) return;
+      const id = response.notification.request.identifier;
+      if (handledResponses.current.has(id)) return;
+      handledResponses.current.add(id);
       const applicationId = response.notification.request.content.data?.applicationId;
       if (typeof applicationId === 'string') router.push(`/applications/${applicationId}`);
-    });
+    },
+    [router, session],
+  );
+
+  const lastResponse = Notifications.useLastNotificationResponse();
+  useEffect(() => {
+    routeFromResponse(lastResponse ?? null);
+  }, [lastResponse, routeFromResponse]);
+
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener(routeFromResponse);
     return () => sub.remove();
-  }, [router]);
+  }, [routeFromResponse]);
+
+  // A push landing while the app is foregrounded shows its banner but refreshes
+  // nothing — pull the new allotment status into the list. Debounced so a burst
+  // of results (an evening sweep resolving several at once) invalidates once.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const sub = Notifications.addNotificationReceivedListener(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['applications'] });
+      }, 2000);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      sub.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (authLoading) return;

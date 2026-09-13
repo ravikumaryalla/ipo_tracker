@@ -17,6 +17,7 @@ import Animated, {
 import { useEffect } from 'react';
 
 import { colors, radius, spacing, type } from '../../constants/theme';
+import { Button } from './Button';
 import { Icon, type IconName } from './Icon';
 
 export function Heading({ children, sub }: { children: React.ReactNode; sub?: string }) {
@@ -141,15 +142,29 @@ export function Banner({
 export type AllotmentCheckResultTone = 'success' | 'neutral' | 'warning';
 
 /**
- * One row per account after a bulk allotment check — a colored dot plus the
+ * One row per account after an allotment check — a colored dot plus the
  * account and its outcome, instead of joining every account's message into
  * one flat paragraph of text where an allotted account reads no different
  * from an error.
+ *
+ * Accounts are checked one at a time, so a row is also how progress is shown:
+ * `pending` swaps the dot for a spinner while that account waits its turn or
+ * is in flight, and `onRetry` puts the retry for a failed account on the row
+ * that failed rather than making the whole IPO the unit of retry.
  */
 export function AllotmentCheckResults({
   results,
 }: {
-  results: { id: string; label: string; message: string; tone: AllotmentCheckResultTone }[];
+  results: {
+    id: string;
+    label: string;
+    message: string;
+    tone: AllotmentCheckResultTone;
+    /** Queued or in flight: show motion instead of a verdict colour. */
+    pending?: boolean;
+    /** Omit for rows there is no point asking about again. */
+    onRetry?: () => void;
+  }[];
 }) {
   const dotColor: Record<AllotmentCheckResultTone, string> = {
     success: colors.success,
@@ -169,11 +184,18 @@ export function AllotmentCheckResults({
           key={r.id}
           style={[styles.resultRow, i === results.length - 1 && { borderBottomWidth: 0 }]}
         >
-          <View style={[styles.resultDot, { backgroundColor: dotColor[r.tone] }]} />
+          {r.pending ? (
+            <ActivityIndicator size="small" color={colors.textFaint} style={styles.resultSpinner} />
+          ) : (
+            <View style={[styles.resultDot, { backgroundColor: dotColor[r.tone] }]} />
+          )}
           <View style={{ flex: 1 }}>
             <Text style={styles.resultLabel}>{r.label}</Text>
             <Text style={[styles.resultMessage, { color: textColor[r.tone] }]}>{r.message}</Text>
           </View>
+          {r.onRetry ? (
+            <Button title="Retry" variant="secondary" size="sm" onPress={r.onRetry} />
+          ) : null}
         </View>
       ))}
     </View>
@@ -298,6 +320,9 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.borderSoft,
   },
   resultDot: { width: 8, height: 8, borderRadius: 4, marginTop: 6 },
+  // Occupies the dot's slot so a row does not shift sideways when its spinner
+  // is replaced by the verdict colour.
+  resultSpinner: { width: 8, height: 8, marginTop: 6 },
   resultLabel: { ...type.bodyStrong, color: colors.text, fontSize: 13 },
   resultMessage: { ...type.caption, fontSize: 12.5, marginTop: 2 },
   empty: { alignItems: 'center', paddingVertical: spacing.xxxl, paddingHorizontal: spacing.xl },

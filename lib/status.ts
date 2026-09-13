@@ -9,11 +9,18 @@
  * allotment result screen would have been a third copy of each, so they live
  * here instead.
  *
- * Presentation only — nothing here talks to the database.
+ * Presentation only — nothing here talks to the database. The one non-type
+ * import from lib/db is isRetryable, which is the check protocol's own answer
+ * to "is this worth asking again"; duplicating that judgement here is how a
+ * Retry button and the run that honours it drift apart.
  */
 import type { AllotmentCheckResultTone } from '../components/ui';
 import { colors } from '../constants/theme';
-import type { OnDemandCheckResult } from './db/allotment';
+import {
+  type AccountCheckState,
+  isRetryable,
+  type OnDemandCheckResult,
+} from './db/allotment';
 import type { ApplicationPnl, ApplicationStatus } from './types';
 
 export const STATUS_TONE: Record<
@@ -83,17 +90,59 @@ export type AccountOutcome = {
   sharesAllotted: number;
   /** A real allotment, as opposed to an unknown, refused or failed check. */
   allotted: boolean;
+  /** This account's own lookup is queued or in flight right now. */
+  pending: boolean;
+  /** Asking the registrar again could plausibly change this row. */
+  retryable: boolean;
+};
+
+/** What a row that has not reached a verdict yet says while it waits its turn. */
+const PHASE_LABEL: Record<'queued' | 'checking', string> = {
+  queued: 'Waiting…',
+  checking: 'Checking…',
 };
 
 /**
  * Resolve one account to the row a result list shows.
  *
- * `live` wins when a check has just run; without it the application's own
- * stored columns answer instead. That fallback is what lets the result screen
- * render identically whether it just called the registrar or is showing an
- * outcome recorded days ago.
+ * `state` is where this account is in the run that is happening (or just
+ * happened) on screen; without it the application's own stored columns answer
+ * instead. That fallback is what lets the result screen render identically
+ * whether it just called the registrar or is showing an outcome recorded days
+ * ago — and, now that accounts are checked one at a time, it is also what the
+ * accounts still queued behind the current one render as.
  */
-export function describeRow(row: ApplicationPnl, live?: OnDemandCheckResult): AccountOutcome {
+export function describeRow(row: ApplicationPnl, state?: AccountCheckState): AccountOutcome {
+  if (state?.phase === 'queued' || state?.phase === 'checking') {
+    return {
+      id: row.id,
+      label: row.account_nickname,
+      message: PHASE_LABEL[state.phase],
+      tone: 'neutral',
+      sharesAllotted: 0,
+      allotted: false,
+      pending: true,
+      retryable: false,
+    };
+  }
+
+  // Never asked — the run stopped starting lookups to avoid a registrar block.
+  // Always retryable: skipping is the one outcome that carries no information
+  // at all about this account.
+  if (state?.phase === 'skipped') {
+    return {
+      id: row.id,
+      label: row.account_nickname,
+      message: state.message ?? 'Not checked',
+      tone: 'warning',
+      sharesAllotted: 0,
+      allotted: false,
+      pending: false,
+      retryable: true,
+    };
+  }
+
+  const live = state?.result;
   if (live) {
     const allotted =
       live.outcome === 'resolved' && (live.status === 'ALLOTTED' || live.status === 'PARTIAL');
@@ -104,6 +153,8 @@ export function describeRow(row: ApplicationPnl, live?: OnDemandCheckResult): Ac
       tone: outcomeTone(live),
       sharesAllotted: allotted ? (live.shares_allotted ?? 0) : 0,
       allotted,
+      pending: false,
+      retryable: isRetryable(live),
     };
   }
 
@@ -124,6 +175,8 @@ export function describeRow(row: ApplicationPnl, live?: OnDemandCheckResult): Ac
     tone: allotted ? 'success' : row.status === 'APPLIED' ? 'warning' : 'neutral',
     sharesAllotted: allotted ? Number(row.shares_allotted) : 0,
     allotted,
+    pending: false,
+    retryable: false,
   };
 }
 
@@ -147,9 +200,9 @@ export type CheckSummary = {
  */
 export function summariseCheck(
   rows: ApplicationPnl[],
-  results?: OnDemandCheckResult[],
+  states?: AccountCheckState[],
 ): CheckSummary {
-  const byId = new Map((results ?? []).map((r) => [r.id, r]));
+  const byId = new Map((states ?? []).map((s) => [s.id, s]));
 
   let allottedAccounts = 0;
   let sharesAllotted = 0;
@@ -163,7 +216,7 @@ export function summariseCheck(
       sharesAllotted += outcome.sharesAllotted;
       amountInvested += outcome.sharesAllotted * Number(row.bid_price);
     }
-    if (outcome.tone === 'warning') pending = true;
+    if (outcome.tone === 'warning' || outcome.pending) pending = true;
   }
 
   return {
