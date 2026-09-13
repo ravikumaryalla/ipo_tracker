@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "910753496716",
+    "project_id": "ipo-tracker-6bc03",
+    "storage_bucket": "ipo-tracker-6bc03.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:910753496716:android:949b58a6fd2e83a23f05a9",
+        "android_client_info": {
+          "package_name": "com.ravikumar.ipotracker"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAeB82BQVhGqSlX0LMYDieHZ46TBFcLmBk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
