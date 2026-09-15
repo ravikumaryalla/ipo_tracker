@@ -244,6 +244,7 @@ export type Database = {
     Views: {
       v_application_pnl: { Row: ApplicationPnl; Relationships: [] };
       v_ipo_latest_gmp: { Row: IpoGmp; Relationships: [] };
+      v_latest_sync_status: { Row: SyncLogRow; Relationships: [] };
     };
     Functions: Record<string, never>;
     Enums: {

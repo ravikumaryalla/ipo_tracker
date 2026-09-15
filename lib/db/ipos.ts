@@ -169,21 +169,16 @@ export function gmpIsStale(rows: IpoGmp[], now = new Date(), hours = 24): boolea
  * looks stale instead of silently showing old data.
  */
 export async function latestSyncStatus(): Promise<SyncLogRow[]> {
+  // v_latest_sync_status is a `distinct on (provider)` over sync_log. This
+  // used to read the newest 45 rows and dedupe here, a count picked to cover
+  // roughly two sync-ipos runs — one that ALLOTMENT_CHECK would now blow
+  // straight through, since a sweep logs on every tick that checks anything.
+  // That would have hidden every other provider from the staleness banner on
+  // exactly the nights a sweep is running. A view has no row count to outgrow.
   const { data, error } = await supabase
-    .from('sync_log')
+    .from('v_latest_sync_status')
     .select('*')
-    .order('ran_at', { ascending: false })
-    // Nine providers report per run (NSE, BSE, IPOWATCH, IPOGYANI, REGISTRAR,
-    // the two GMP feeds, the shared backfill, and KFINTECH_MATCH), so 20 rows
-    // would be barely two runs — not enough to still name a provider that
-    // failed a couple of runs ago.
-    .limit(45);
+    .order('ran_at', { ascending: false });
   if (error) throw dbError(error);
-
-  const seen = new Set<string>();
-  return (data ?? []).filter((row) => {
-    if (seen.has(row.provider)) return false;
-    seen.add(row.provider);
-    return true;
-  });
+  return data ?? [];
 }

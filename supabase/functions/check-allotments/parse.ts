@@ -16,33 +16,100 @@
 /** India is UTC+5:30 and never observes DST, so a fixed offset is correct. */
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-/** Three hours: 21:00 IST until midnight. */
-const CHECK_WINDOW_MS = 3 * 60 * 60 * 1000;
+/** The sweep opens at 21:00 IST on allotment_date. */
+const WINDOW_OPENS_IST_HOUR = 21;
+
+/** Eleven hours: 21:00 IST until 08:00 IST the next morning. */
+const CHECK_WINDOW_MS = 11 * 60 * 60 * 1000;
+
+/** The first three of those hours — 21:00 IST until midnight. */
+const DENSE_PHASE_MS = 3 * 60 * 60 * 1000;
+
+/** How often to recheck a row before midnight, and after it. */
+const DENSE_INTERVAL_MS = 2 * 60 * 1000;
+const OVERNIGHT_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
- * Whether it's time to check this IPO's allotment yet.
+ * Slack allowed when comparing elapsed time against the interval.
  *
- * Basis of Allotment typically finalises in the evening, so the sweep runs
- * for exactly one window: 21:00 IST on `allotmentDate` until midnight that
- * same night. The 15-minute cadence inside it comes from the cron
- * re-invoking this function, not from anything tracked here.
+ * Load-bearing, not defensive rounding. A sweep stamps allotment_checked_at
+ * seconds *after* the cron tick that started it, so two one-minute ticks later
+ * the measured gap is ~113s, not 120s. Without slack every interval would
+ * silently stretch by a whole tick — 2 minutes becoming 3, 5 becoming 6.
  *
- * The window deliberately closes at midnight rather than staying open until
- * a result appears. An allotment published the next morning — or a slipped
- * allotment_date — is therefore never picked up automatically; the app's
- * "Check status" button skips this gate entirely and is the fallback for
- * that case.
+ * 30s is under the 60s tick, so it can never let a tick through early, and far
+ * under the 2-minute interval, so it cannot collapse two intervals into one.
  */
-export function isAllotmentCheckDue(allotmentDate: string, nowIso: string): boolean {
+const CADENCE_TOLERANCE_MS = 30 * 1000;
+
+/** When the window opens for `allotmentDate`, or null if it isn't a date. */
+function windowOpensMs(allotmentDate: string): number | null {
   const m = allotmentDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!m) return false;
+  if (!m) return null;
+  return (
+    Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), WINDOW_OPENS_IST_HOUR, 0, 0) -
+    IST_OFFSET_MS
+  );
+}
 
-  const now = new Date(nowIso);
-  if (Number.isNaN(now.getTime())) return false;
+/**
+ * How often this IPO should be rechecked right now, or null if it's outside
+ * the window entirely.
+ *
+ * Basis of Allotment typically finalises in the evening, so the sweep opens at
+ * 21:00 IST on `allotmentDate` and runs until 08:00 IST the next morning. It
+ * is dense while the result is most likely to land — every two minutes until
+ * midnight — and then backs off to every five for the overnight tail, which
+ * exists for results that slip past midnight rather than because anything is
+ * expected there.
+ *
+ * The window still closes rather than staying open until a result appears. A
+ * slipped allotment_date is therefore never picked up automatically; the app's
+ * "Check status" button skips this gate entirely and is the fallback for that.
+ */
+export function allotmentCheckIntervalMs(
+  allotmentDate: string,
+  nowIso: string,
+): number | null {
+  const opensMs = windowOpensMs(allotmentDate);
+  if (opensMs === null) return null;
 
-  const opensMs =
-    Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 21, 0, 0) - IST_OFFSET_MS;
-  return now.getTime() >= opensMs && now.getTime() < opensMs + CHECK_WINDOW_MS;
+  const now = new Date(nowIso).getTime();
+  if (Number.isNaN(now)) return null;
+
+  const elapsed = now - opensMs;
+  if (elapsed < 0 || elapsed >= CHECK_WINDOW_MS) return null;
+  return elapsed < DENSE_PHASE_MS ? DENSE_INTERVAL_MS : OVERNIGHT_INTERVAL_MS;
+}
+
+/**
+ * Whether it's time to check this IPO's allotment again.
+ *
+ * Two gates: the window (see allotmentCheckIntervalMs) and the cadence. The
+ * cadence is measured against `lastCheckedIso` — ipo_applications.
+ * allotment_checked_at, which every attempt stamps — rather than against the
+ * cron schedule, because a cron expression has a single minute field and
+ * cannot say "every two minutes, then every five" without spelling out both
+ * phases as separate jobs on :30 UTC boundaries. Reading the stamp also means
+ * a missed tick doesn't shift the cadence, and the app's own "Check status"
+ * tap correctly pushes the next scheduled check out by one interval.
+ *
+ * A row that has never been checked is always due inside the window.
+ */
+export function isAllotmentCheckDue(
+  allotmentDate: string,
+  nowIso: string,
+  lastCheckedIso?: string | null,
+): boolean {
+  const interval = allotmentCheckIntervalMs(allotmentDate, nowIso);
+  if (interval === null) return false;
+  if (!lastCheckedIso) return true;
+
+  const lastChecked = new Date(lastCheckedIso).getTime();
+  // An unreadable stamp is no evidence of a check, so treat it as never.
+  if (Number.isNaN(lastChecked)) return true;
+
+  return new Date(nowIso).getTime() - lastChecked >= interval - CADENCE_TOLERANCE_MS;
 }
 
 /** One application KFintech has on file against the queried PAN. */

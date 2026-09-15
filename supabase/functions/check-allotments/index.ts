@@ -6,7 +6,7 @@
  *
  *  - Scheduled (no request body): every application still waiting on a
  *    result, gated by whether its IPO's allotment_date is due yet (see
- *    below). This is the 15-minute cron sweep.
+ *    below). This is the per-minute cron sweep.
  *  - On-demand (`{ applicationIds: string[] }` in the body): the app's
  *    "Check status" button. Runs the identical check/persist logic against
  *    exactly the ids named, skipping the due-date gate — an explicit user
@@ -28,13 +28,21 @@
  * Skipping that check would let any authenticated user read anyone's
  * allotment result by guessing/reusing an application id.
  *
- * Scheduled candidates are due only inside one window: 21:00 IST to midnight
- * on their IPO's allotment_date (Basis of Allotment typically finalises in
- * the evening — see parse.ts#isAllotmentCheckDue). Inside it they are
- * rechecked every 15 minutes until KFintech returns a definitive result
- * (status stops being 'APPLIED', so it drops out of the query on its own).
- * Once midnight passes the sweep gives up for good and the on-demand path
+ * Scheduled candidates are due only inside one window: 21:00 IST on their
+ * IPO's allotment_date until 08:00 IST the next morning (Basis of Allotment
+ * typically finalises in the evening — see parse.ts#isAllotmentCheckDue).
+ * Inside it a row is rechecked every two minutes until midnight and every
+ * five through the overnight tail, until the registrar returns a definitive
+ * result (status stops being 'APPLIED', so it drops out of the query on its
+ * own). Once 08:00 passes the sweep gives up for good and the on-demand path
  * below is the only way an unresolved application gets checked again.
+ *
+ * That cadence lives in parse.ts and is measured against each row's
+ * allotment_checked_at, not against the cron — the cron simply ticks every
+ * minute, and trigger_check_allotments() skips the HTTP call entirely on the
+ * ticks where no application is anywhere near its allotment_date (see
+ * supabase/migrations/20260915000002_cron_check_allotments_2min.sql). Only
+ * one sweep runs at a time; claimSweepLease below says why that matters.
  *
  * A WORD OF WARNING, same as sync-ipos: both registrar endpoints below are
  * undocumented, reverse-engineered from their own frontends. Either can
@@ -112,7 +120,7 @@ const OCR_URL = Deno.env.get('OCR_URL') ?? 'https://ocr-job.onrender.com/ocr';
  * not five; the budget only binds on unlucky rows.
  *
  * Three would leave one Bigshare lookup in five failing per sweep. The cron
- * would paper over that by retrying every 15 minutes, but the on-demand
+ * would paper over that by retrying a couple of minutes later, but the on-demand
  * "Check status" button gets one shot, and there the difference between 80%
  * and 93% is the difference between a button that mostly works and one that
  * works.
@@ -152,6 +160,7 @@ type CandidateRow = {
   user_id: string;
   shares_applied: number;
   application_no: string | null;
+  allotment_checked_at: string | null;
   ipos: {
     company_name: string;
     registrar: string | null;
@@ -194,7 +203,7 @@ async function loadCandidates(client: SupabaseClient): Promise<CandidateRow[]> {
   const { data, error } = await client
     .from('ipo_applications')
     .select(
-      'id, user_id, shares_applied, application_no, ipos(company_name, registrar, kfintech_company_id, bigshare_company_id, mufg_company_id, allotment_date), demat_accounts(pan)',
+      'id, user_id, shares_applied, application_no, allotment_checked_at, ipos(company_name, registrar, kfintech_company_id, bigshare_company_id, mufg_company_id, allotment_date), demat_accounts(pan)',
     )
     .eq('status', 'APPLIED');
   if (error) throw error;
@@ -208,7 +217,7 @@ function dueRows(candidates: CandidateRow[], nowIso: string): DueRow[] {
     const allotmentDate = row.ipos?.allotment_date;
     const pan = row.demat_accounts?.pan;
     if (!resolved || !allotmentDate || !pan) continue;
-    if (!isAllotmentCheckDue(allotmentDate, nowIso)) continue;
+    if (!isAllotmentCheckDue(allotmentDate, nowIso, row.allotment_checked_at)) continue;
     due.push({
       id: row.id,
       userId: row.user_id,
@@ -905,6 +914,51 @@ async function handleOnDemand(
   });
 }
 
+/**
+ * How long a sweep holds the lease, and the row it holds.
+ *
+ * Comfortably above BIGSHARE_RUN_DEADLINE_MS plus the persistence and push
+ * work that follows it, so a healthy sweep always releases the lease itself.
+ * The expiry only has to cover the case where an isolate dies mid-run.
+ */
+const SWEEP_LEASE_MS = 3 * 60 * 1000;
+const SWEEP_LEASE_NAME = 'check-allotments';
+
+/**
+ * Take the sweep lease, or report that another sweep already holds it.
+ *
+ * The cron ticks every minute and a sweep can run for the best part of two —
+ * BIGSHARE_RUN_DEADLINE_MS alone is 110s — so without this, overlapping
+ * invocations would be routine rather than exceptional. The wasted work is
+ * the least of it: bigsharePaced's queue and the block circuit-breaker are
+ * both per-invocation, so two concurrent sweeps would quietly double the
+ * request rate at the one endpoint that has actually blocked us before, and
+ * could send the same allotment push twice.
+ *
+ * The conditional UPDATE *is* the lock. Postgres serialises the two writes,
+ * so only one caller can find a still-expired locked_until and claim it.
+ * Reading the timestamp and then writing it would not be a lock at all —
+ * the same mistake bigsharePaced's chained queue exists to avoid.
+ */
+async function claimSweepLease(client: SupabaseClient): Promise<boolean> {
+  const { data, error } = await client
+    .from('job_leases')
+    .update({ locked_until: new Date(Date.now() + SWEEP_LEASE_MS).toISOString() })
+    .eq('name', SWEEP_LEASE_NAME)
+    .lt('locked_until', new Date().toISOString())
+    .select('name');
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+/** Best-effort: a failed release still expires on its own in SWEEP_LEASE_MS. */
+async function releaseSweepLease(client: SupabaseClient): Promise<void> {
+  await client
+    .from('job_leases')
+    .update({ locked_until: new Date().toISOString() })
+    .eq('name', SWEEP_LEASE_NAME);
+}
+
 Deno.serve(async (req) => {
   const body = await req.json().catch(() => ({}));
   const requestedIds: unknown = body?.applicationIds;
@@ -923,10 +977,19 @@ Deno.serve(async (req) => {
   let ok = true;
   let checked = 0;
   let resolved = 0;
+  let held = false;
   const errors: string[] = [];
   let push: PushSummary = { sent: 0, failed: 0, pruned: 0 };
 
   try {
+    held = await claimSweepLease(client);
+    if (!held) {
+      return new Response(
+        JSON.stringify({ ok: true, skipped: 'lease held' }, null, 2),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
     const nowIso = new Date().toISOString();
     const candidates = await loadCandidates(client);
     const due = dueRows(candidates, nowIso);
@@ -943,6 +1006,23 @@ Deno.serve(async (req) => {
   } catch (e) {
     ok = false;
     errors.push(e instanceof Error ? e.message : String(e));
+  } finally {
+    // `held` is false on the early return above, so a sweep never releases a
+    // lease it didn't take — and a claim that threw never took one.
+    if (held) await releaseSweepLease(client);
+  }
+
+  // A tick that found nothing due is now the overwhelmingly common case: the
+  // cron runs every minute, and even inside the window a row is only due
+  // every two. Logging each one would write four figures of rows a day and
+  // push every other provider out of latestSyncStatus' view, which is exactly
+  // the staleness banner this table exists to feed. Errors and sweeps that
+  // actually checked something still log, so a broken sweep stays visible.
+  if (ok && checked === 0) {
+    return new Response(
+      JSON.stringify({ ok, checked, resolved, errors }, null, 2),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
   }
 
   const base =
