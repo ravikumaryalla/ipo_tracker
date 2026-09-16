@@ -101,6 +101,17 @@ export type Ipo = {
   bigshare_company_id: string | null;
   /** MUFG Intime's internal company id for this issue's allotment-status lookup. Null unless matched. */
   mufg_company_id: string | null;
+  /**
+   * When a registrar was first seen answering allotment queries for this issue
+   * — i.e. when its result was published. Null while still awaiting one, and
+   * always null for KFintech issues, which expose no such signal. Written only
+   * by the check-allotments watch.
+   */
+  allotment_out_at: string | null;
+  /** When the "results are out" push went out for this issue. */
+  allotment_notified_at: string | null;
+  /** When the watch last looked for this issue, successful or not. */
+  allotment_probed_at: string | null;
   source: string;
   created_by: string | null;
   last_synced_at: string | null;

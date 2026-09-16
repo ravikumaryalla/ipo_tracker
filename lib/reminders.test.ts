@@ -1,7 +1,9 @@
 /**
  * remindersFor decides what the user gets pinged about. The rules that matter:
  * don't nag about applying to something already applied for, don't remind about
- * allotment for something never applied to, and never schedule into the past.
+ * listing for something never applied to, and never schedule into the past.
+ * Allotment is deliberately absent — that notification comes from the server
+ * now, when the result is genuinely published.
  */
 import { remindersFor } from './reminders';
 import type { Ipo } from './types';
@@ -29,6 +31,9 @@ function ipo(patch: Partial<Ipo>): Ipo {
     kfintech_company_id: null,
     bigshare_company_id: null,
     mufg_company_id: null,
+    allotment_out_at: null,
+    allotment_notified_at: null,
+    allotment_probed_at: null,
     source: 'MANUAL',
     created_by: null,
     last_synced_at: null,
@@ -56,7 +61,7 @@ describe('remindersFor', () => {
     expect(reminders.find((r) => r.id.endsWith(':close'))).toBeUndefined();
   });
 
-  it('reminds about allotment and listing only once you have applied', () => {
+  it('reminds about listing only once you have applied', () => {
     const withDates = ipo({
       allotment_date: daysFromNow(5),
       listing_date: daysFromNow(8),
@@ -65,7 +70,7 @@ describe('remindersFor', () => {
     expect(remindersFor(withDates, false)).toHaveLength(0);
 
     const applied = remindersFor(withDates, true);
-    expect(applied.map((r) => r.id).sort()).toEqual(['i1:allotment', 'i1:listing']);
+    expect(applied.map((r) => r.id)).toEqual(['i1:listing']);
   });
 
   it('never schedules a reminder in the past', () => {
@@ -89,14 +94,12 @@ describe('remindersFor', () => {
     }
   });
 
-  // 9pm is when the server starts checking KFintech, so a 9am nudge would point
-  // at a result that cannot exist yet.
-  it('schedules the allotment reminder for 9pm, not the morning', () => {
-    const reminders = remindersFor(ipo({ allotment_date: daysFromNow(4) }), true);
-    expect(reminders).toHaveLength(1);
-    expect(reminders[0].id).toBe('i1:allotment');
-    expect(reminders[0].when.getHours()).toBe(21);
-    expect(reminders[0].when.getTime()).toBeGreaterThan(Date.now());
+  // allotment_date is a scraped estimate, so a local reminder keyed to it fired
+  // whether or not a result existed. The server now watches for the result
+  // actually being published and pushes then — see
+  // supabase/functions/check-allotments/registrarWatch.ts.
+  it('schedules nothing locally for allotment', () => {
+    expect(remindersFor(ipo({ allotment_date: daysFromNow(4) }), true)).toHaveLength(0);
   });
 
   it('produces nothing for an IPO with no dates', () => {

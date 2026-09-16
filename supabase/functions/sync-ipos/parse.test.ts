@@ -243,6 +243,39 @@ describe('resolveKfintechCompanyMatch', () => {
     ).toBe('b');
   });
 
+  it('bridges a word boundary the registrar puts in a different place', () => {
+    // Live failure, 2026-09-15: KFintech listed "STEAMHOUSE INDIA LIMITED"
+    // while the exchanges gave us "Steam House India Limited". The first-word
+    // pass cannot reach this — it buckets by an exact first word, and there is
+    // no "steamhouse" bucket to look in — so the IPO never got a company id
+    // and the allotment sweep skipped every application against it.
+    const steam = buildIpoIndexes([
+      { id: 'ipo-steam', symbol: 'STEAMHOUSE', company_name: 'Steam House India Limited', open_date: '2026-09-09' },
+    ]);
+    expect(
+      resolveKfintechCompanyMatch({ clientId: '1', name: 'STEAMHOUSE INDIA LIMITED' }, steam, new Set()),
+    ).toBe('ipo-steam');
+  });
+
+  it('bridges that boundary in the other direction too', () => {
+    const joined = buildIpoIndexes([
+      { id: 'ipo-joined', symbol: 'STEAMHOUSE', company_name: 'Steamhouse India Limited', open_date: '2026-09-09' },
+    ]);
+    expect(
+      resolveKfintechCompanyMatch({ clientId: '1', name: 'STEAM HOUSE INDIA LIMITED' }, joined, new Set()),
+    ).toBe('ipo-joined');
+  });
+
+  it('does not let the whole-name fallback steal an already claimed row', () => {
+    const steam = buildIpoIndexes([
+      { id: 'ipo-steam', symbol: 'STEAMHOUSE', company_name: 'Steam House India Limited', open_date: '2026-09-09' },
+    ]);
+    const claimed = new Set(['ipo-steam']);
+    expect(
+      resolveKfintechCompanyMatch({ clientId: '1', name: 'STEAMHOUSE INDIA LIMITED' }, steam, claimed),
+    ).toBeNull();
+  });
+
   it('returns null for an NCD/bond entry with no matching equity IPO', () => {
     const company = { clientId: '64562521850', name: 'POWER FINANCE CORPORATION LIMITED - NCDS' };
     expect(resolveKfintechCompanyMatch(company, indexes, new Set())).toBeNull();

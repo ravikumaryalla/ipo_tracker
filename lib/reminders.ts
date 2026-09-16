@@ -32,22 +32,15 @@ export function remindersFor(ipo: Ipo, hasApplication: boolean): Reminder[] {
     }
   }
 
-  // Allotment and listing only matter once you have applied.
-  // 9pm, not 9am: the server only starts checking KFintech at 21:00 IST on
-  // allotment_date (supabase/functions/check-allotments/parse.ts), so a morning
-  // nudge pointed at a result that could not exist yet.
-  if (hasApplication && ipo.allotment_date) {
-    const when = onDateAt(ipo.allotment_date, 21);
-    if (when) {
-      out.push({
-        id: `${ipo.id}:allotment`,
-        title: `${ipo.symbol} allotment is out`,
-        body: 'Check whether you got an allotment and record it.',
-        when,
-      });
-    }
-  }
-
+  // There is deliberately no allotment reminder here. There used to be one at
+  // 21:00 on allotment_date, but it was pure date arithmetic — it fired whether
+  // or not a result existed, and allotment_date is a scraped estimate that
+  // slips. The server now watches for the result actually being published and
+  // pushes "Allotment results are out" when it is (see
+  // supabase/functions/check-allotments/registrarWatch.ts), so a local guess
+  // firing first could only ever send someone into an empty check.
+  //
+  // Listing only matters once you have applied.
   if (hasApplication && ipo.listing_date) {
     const when = onDateAt(ipo.listing_date);
     if (when) {

@@ -99,7 +99,9 @@ function RouteGate({ children }: { children: React.ReactNode }) {
     }
   }, [status]);
 
-  // Tapping an allotment-result push opens that application directly. The route
+  // Tapping an "allotment results are out" push opens that IPO's result screen,
+  // which runs the check itself on mount — the push only says a result exists,
+  // so the tap is where the user actually finds out what they got. The route
   // gate above still runs first (e.g. redirects to unlock if locked); this only
   // decides where to land once past it. Two paths reach here — a tap while the
   // app is already running (the listener) and a tap that cold-started it from
@@ -112,8 +114,14 @@ function RouteGate({ children }: { children: React.ReactNode }) {
       const id = response.notification.request.identifier;
       if (handledResponses.current.has(id)) return;
       handledResponses.current.add(id);
-      const applicationId = response.notification.request.content.data?.applicationId;
-      if (typeof applicationId === 'string') router.push(`/applications/${applicationId}`);
+      const data = response.notification.request.content.data;
+      // applicationId is the old per-result push, which the sweep no longer
+      // sends. Still handled: a notification delivered before the app updated
+      // can sit in the tray for days, and dropping it would make that tap do
+      // nothing at all.
+      if (typeof data?.ipoId === 'string') router.push(`/allotment/${data.ipoId}`);
+      else if (typeof data?.applicationId === 'string')
+        router.push(`/applications/${data.applicationId}`);
     },
     [router, session],
   );

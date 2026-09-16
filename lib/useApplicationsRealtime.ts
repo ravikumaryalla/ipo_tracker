@@ -1,9 +1,11 @@
 /**
  * Live-updates the Allotment Status list while the app is open.
  *
- * A push covers the app being closed; this covers the rest: a row resolved by
- * the 15-minute cron sweep, or an outcome recorded on another device, while
- * this device is foregrounded. Subscribes to the signed-in user's own
+ * A push covers the app being closed; this covers the rest: an outcome checked
+ * or recorded on another device while this one is foregrounded. Nothing on the
+ * server resolves rows any more — the cron only watches for a result being
+ * published and notifies — so another device is now the only source of a change
+ * this device did not make itself. Subscribes to the signed-in user's own
  * ipo_applications rows and invalidates the ['applications'] query (which reads
  * the v_application_pnl view — Realtime cannot watch a view, so we watch the
  * base table) on any change.

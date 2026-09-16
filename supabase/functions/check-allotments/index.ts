@@ -1,25 +1,37 @@
 /**
- * check-allotments — checks KFintech, Bigshare, or MUFG Intime allotment
- * status (whichever registrar an application's IPO is matched to — see
- * resolveProvider) and
- * writes the result straight into public.ipo_applications. Two entry points:
+ * check-allotments — two entry points that answer two different questions.
  *
- *  - Scheduled (no request body): every application still waiting on a
- *    result, gated by whether its IPO's allotment_date is due yet (see
- *    below). This is the per-minute cron sweep.
- *  - On-demand (`{ applicationIds: string[] }` in the body): the app's
- *    "Check status" button. Runs the identical check/persist logic against
- *    exactly the ids named, skipping the due-date gate — an explicit user
- *    tap is its own justification, unlike the sweep, which needs the gate
- *    to avoid hammering the registrar before results are plausibly out.
+ *  - Scheduled (no request body): **has this IPO's allotment been published
+ *    yet?** Per IPO, not per user. Answered from Bigshare's and MUFG's public
+ *    company lists, which carry only the issues their lookup will currently
+ *    answer for (see registrarWatch.ts). When one appears, every user with an
+ *    application on it gets a single "results are out" push and the IPO is
+ *    retired from the watch. This path reads no PAN and writes nothing to
+ *    ipo_applications.
+ *  - On-demand (`{ applicationIds: string[] }` in the body): **what did I
+ *    get?** The app's "Check status" button, and the only thing that ever
+ *    resolves an application. Queries the registrar with the applicant's PAN
+ *    and writes status/shares_allotted, for exactly the ids named.
  *
- * This only exists because PAN became a plain column
- * (see supabase/migrations/20260811000007_pan_plaintext.sql) — that was a
- * deliberate, explicitly-confirmed exception to this project's usual "no
- * plaintext credential column" rule, made specifically so this function
- * could read a PAN without a user's device being involved at all. Every
- * other secret on demat_accounts stays encrypted; this is the one place
- * that trade-off was made on purpose.
+ * The split is deliberate. The sweep used to do the on-demand path's job on
+ * everyone's behalf — one PAN-bearing registrar request per application every
+ * two minutes all night — and pushed the outcome, which made the notification
+ * the answer and the app somewhere to confirm what you already knew. Now the
+ * notification only says a result exists; the user taps it and the app runs
+ * the real check (app/allotment/[ipoId].tsx runs it on mount). Nightly
+ * registrar load is one public page fetch per registrar instead of one PAN
+ * lookup per application, and no PAN leaves the database on a schedule.
+ *
+ * KFintech is the known gap: its company list is a full directory baked into
+ * a JS bundle with no per-issue status, so a KFintech issue is never detected
+ * and never notifies. Its users check from the app, as they always could.
+ *
+ * The PAN column this reads on the on-demand path is plaintext
+ * (see supabase/migrations/20260811000007_pan_plaintext.sql) — a deliberate,
+ * explicitly-confirmed exception to this project's usual "no plaintext
+ * credential column" rule, made so this function could read a PAN without a
+ * user's device being involved. Every other secret on demat_accounts stays
+ * encrypted; this is the one place that trade-off was made on purpose.
  *
  * The on-demand path is the one place this function trusts caller input, so
  * it verifies the caller actually owns every id it's given (via a second,
@@ -28,29 +40,28 @@
  * Skipping that check would let any authenticated user read anyone's
  * allotment result by guessing/reusing an application id.
  *
- * Scheduled candidates are due only inside one window: 21:00 IST on their
- * IPO's allotment_date until 08:00 IST the next morning (Basis of Allotment
- * typically finalises in the evening — see parse.ts#isAllotmentCheckDue).
- * Inside it a row is rechecked every two minutes until midnight and every
- * five through the overnight tail, until the registrar returns a definitive
- * result (status stops being 'APPLIED', so it drops out of the query on its
- * own). Once 08:00 passes the sweep gives up for good and the on-demand path
- * below is the only way an unresolved application gets checked again.
+ * An IPO is watched only inside one window: 21:00 IST on its allotment_date
+ * until 08:00 IST the next morning (Basis of Allotment typically finalises in
+ * the evening — see parse.ts#isAllotmentCheckDue), rechecked every two minutes
+ * until midnight and every five through the overnight tail. Once 08:00 passes
+ * the watch gives up for good and no notification is ever sent for that issue;
+ * the app's "Check" button is the fallback, as it is for KFintech.
  *
- * That cadence lives in parse.ts and is measured against each row's
- * allotment_checked_at, not against the cron — the cron simply ticks every
+ * That cadence lives in parse.ts and is measured against ipos.
+ * allotment_probed_at, not against the cron — the cron simply ticks every
  * minute, and trigger_check_allotments() skips the HTTP call entirely on the
- * ticks where no application is anywhere near its allotment_date (see
- * supabase/migrations/20260915000002_cron_check_allotments_2min.sql). Only
- * one sweep runs at a time; claimSweepLease below says why that matters.
+ * ticks where nothing is awaiting a result near its allotment_date (see
+ * supabase/migrations/20260916000001_allotment_results_out.sql). Only one
+ * sweep runs at a time; claimSweepLease below says why that matters.
  *
- * A WORD OF WARNING, same as sync-ipos: both registrar endpoints below are
- * undocumented, reverse-engineered from their own frontends. Either can
- * change shape without notice. This function is written to degrade rather
- * than break: one application's failure never stops the batch. Only the
- * scheduled sweep is recorded in public.sync_log — logging every on-demand
- * tap under the same provider tag would make a genuinely broken cron look
- * healthy on the app's staleness banner (see lib/db/ipos.ts).
+ * A WORD OF WARNING, same as sync-ipos: every registrar endpoint below is
+ * undocumented, reverse-engineered from their own frontends. Any can change
+ * shape without notice. This function is written to degrade rather than
+ * break: one registrar being down never stops the other, and one
+ * application's failure never stops the batch. Only the scheduled sweep is
+ * recorded in public.sync_log — logging every on-demand tap under the same
+ * provider tag would make a genuinely broken cron look healthy on the app's
+ * staleness banner (see lib/db/ipos.ts).
  *
  * Deploy:  supabase functions deploy check-allotments
  * Invoke:  supabase functions invoke check-allotments
@@ -88,6 +99,14 @@ import {
   pickMatch,
   statusFor,
 } from './parse.ts';
+import {
+  matchWatchedIpos,
+  mufgXmlFromBody,
+  parseBigshareCompanies,
+  parseMufgCompanies,
+  type RegistrarCompany,
+  type WatchedIpo,
+} from './registrarWatch.ts';
 
 const BROWSER_HEADERS = {
   'User-Agent':
@@ -119,10 +138,10 @@ const OCR_URL = Deno.env.get('OCR_URL') ?? 'https://ocr-job.onrender.com/ocr';
  * for another ~4s. At 42% the expected cost is ~2.4 attempts (~10s) per row,
  * not five; the budget only binds on unlucky rows.
  *
- * Three would leave one Bigshare lookup in five failing per sweep. The cron
- * would paper over that by retrying a couple of minutes later, but the on-demand
- * "Check status" button gets one shot, and there the difference between 80%
- * and 93% is the difference between a button that mostly works and one that
+ * Three would leave one Bigshare lookup in five failing. There is no sweep to
+ * paper over that any more — "Check status" is the only caller, it gets one
+ * shot, and a failed row costs the user a visible Retry. The difference between
+ * 80% and 93% is the difference between a button that mostly works and one that
  * works.
  */
 const BIGSHARE_CAPTCHA_ATTEMPTS = 5;
@@ -130,8 +149,8 @@ const BIGSHARE_CAPTCHA_ATTEMPTS = 5;
 /**
  * The OCR service sleeps when idle (free tier), and a cold start costs
  * roughly 50s against ~4s warm. A tighter timeout would fail every lookup
- * that happens to be the first one after a quiet spell — exactly the
- * situation the 15-minute cron creates.
+ * that happens to be the first one after a quiet spell — which, now that only
+ * the on-demand path reaches Bigshare, is most taps.
  */
 const OCR_TIMEOUT_MS = 60_000;
 
@@ -160,14 +179,12 @@ type CandidateRow = {
   user_id: string;
   shares_applied: number;
   application_no: string | null;
-  allotment_checked_at: string | null;
   ipos: {
     company_name: string;
     registrar: string | null;
     kfintech_company_id: string | null;
     bigshare_company_id: string | null;
     mufg_company_id: string | null;
-    allotment_date: string | null;
   } | null;
   demat_accounts: { pan: string | null } | null;
 };
@@ -197,39 +214,6 @@ function resolveProvider(
   if (ipo?.bigshare_company_id) return { provider: 'BIGSHARE', companyId: ipo.bigshare_company_id };
   if (ipo?.mufg_company_id) return { provider: 'MUFG', companyId: ipo.mufg_company_id };
   return null;
-}
-
-async function loadCandidates(client: SupabaseClient): Promise<CandidateRow[]> {
-  const { data, error } = await client
-    .from('ipo_applications')
-    .select(
-      'id, user_id, shares_applied, application_no, allotment_checked_at, ipos(company_name, registrar, kfintech_company_id, bigshare_company_id, mufg_company_id, allotment_date), demat_accounts(pan)',
-    )
-    .eq('status', 'APPLIED');
-  if (error) throw error;
-  return (data ?? []) as unknown as CandidateRow[];
-}
-
-function dueRows(candidates: CandidateRow[], nowIso: string): DueRow[] {
-  const due: DueRow[] = [];
-  for (const row of candidates) {
-    const resolved = resolveProvider(row.ipos);
-    const allotmentDate = row.ipos?.allotment_date;
-    const pan = row.demat_accounts?.pan;
-    if (!resolved || !allotmentDate || !pan) continue;
-    if (!isAllotmentCheckDue(allotmentDate, nowIso, row.allotment_checked_at)) continue;
-    due.push({
-      id: row.id,
-      userId: row.user_id,
-      companyName: row.ipos?.company_name ?? 'your IPO',
-      shares_applied: row.shares_applied,
-      application_no: row.application_no,
-      provider: resolved.provider,
-      companyId: resolved.companyId,
-      pan,
-    });
-  }
-  return due;
 }
 
 type CheckResult = {
@@ -310,8 +294,8 @@ async function checkOneKfintech(row: DueRow): Promise<ProviderCheckResult> {
  * Chained rather than a bare timestamp comparison, because a comparison is not
  * a lock: two callers reading the same `nextAllowedAt` would both decide they
  * could go. Chaining makes this an actual serial queue, which matters in the
- * one case row-level serialism does not cover — the 15-minute cron sweep and
- * an on-demand "Check status" tap landing in the same warm isolate.
+ * one case row-level serialism does not cover — two "Check status" taps (one
+ * user's several accounts, or two users) landing in the same warm isolate.
  *
  * Module scope here is deliberate, and is the opposite of the choice made for
  * BigshareCircuit just below. The circuit is per-run precisely so one blocked
@@ -610,17 +594,17 @@ async function checkOne(
  * Bigshare no longer can: every row needs its own single-use captcha, and
  * firing N of those at Captcha.ashx simultaneously is the fastest way to be
  * rate-limited — which costs far more than the parallelism saves, since a
- * throttled row degrades to "not yet" and waits a full 15 minutes for the
- * next sweep. So Bigshare rows go one at a time.
+ * throttled row degrades to "not yet" and, with no sweep left to retry it,
+ * waits for the user to tap again. So Bigshare rows go one at a time.
  *
  * One at a time is necessary but not sufficient: a serial loop still fires
  * back-to-back as fast as the network allows, which is its own way to be
  * blocked. pacedBigshareFetch adds the spacing, and `deadlineAt` below bounds
  * what that spacing can cost a single invocation.
  *
- * Both call sites walk the returned array positionally (the on-demand
- * response body, and sendAllotmentPushes), so the two groups are stitched
- * back into the caller's original order rather than concatenated.
+ * The caller walks the returned array positionally to build the on-demand
+ * response body, so the two groups are stitched back into its original order
+ * rather than concatenated.
  */
 async function runChecks(client: SupabaseClient, rows: DueRow[]): Promise<CheckResult[]> {
   const results = new Array<CheckResult>(rows.length);
@@ -679,43 +663,237 @@ async function loadCandidatesByIds(
 }
 
 // ---------------------------------------------------------------------------
-// push notifications — fired the instant a status resolves
+// the watch — "is this IPO's result published?", once per IPO, no PAN
+// ---------------------------------------------------------------------------
+
+const BIGSHARE_COMPANIES_URL = 'https://ipo.bigshareonline.com/ipo_status.html';
+const MUFG_COMPANIES_URL = `${MUFG_BASE}/IPO.aspx/GetDetails`;
+
+/** An IPO awaiting its result, as loaded for the watch. */
+type WatchRow = {
+  id: string;
+  company_name: string;
+  allotment_date: string | null;
+  allotment_out_at: string | null;
+  allotment_probed_at: string | null;
+  bigshare_company_id: string | null;
+  mufg_company_id: string | null;
+};
+
+/**
+ * Every IPO somebody is still waiting on that has not been announced yet.
+ *
+ * Keyed on allotment_notified_at rather than allotment_out_at, and that is
+ * load-bearing: the two columns exist precisely so that detecting a result and
+ * announcing it can fail independently. An issue detected on one tick whose
+ * push then failed still comes back here on the next one, already carrying its
+ * allotment_out_at, and gets announced without troubling the registrar again.
+ * Keyed on allotment_out_at instead, that issue would drop out of the watch the
+ * instant it was detected and its users would never hear about it at all.
+ *
+ * The `!inner` embed is the "somebody is waiting" half: without it the watch
+ * would poll registrars all night for issues nobody in this database cares
+ * about, and would have nobody to notify when one landed. Resolved applications
+ * don't count — an IPO whose applications are all ALLOTTED/NOT_ALLOTTED has
+ * nothing left to announce.
+ */
+async function loadWatchedIpos(client: SupabaseClient): Promise<WatchRow[]> {
+  const { data, error } = await client
+    .from('ipos')
+    .select(
+      'id, company_name, allotment_date, allotment_out_at, allotment_probed_at, bigshare_company_id, mufg_company_id, ipo_applications!inner(id)',
+    )
+    .is('allotment_notified_at', null)
+    .not('allotment_date', 'is', null)
+    .eq('ipo_applications.status', 'APPLIED');
+  if (error) throw error;
+  return (data ?? []) as unknown as WatchRow[];
+}
+
+/** The due subset, by the same window and cadence the old per-row sweep used. */
+function dueIpos(watched: WatchRow[], nowIso: string): WatchRow[] {
+  return watched.filter(
+    (ipo) =>
+      !!ipo.allotment_date &&
+      isAllotmentCheckDue(ipo.allotment_date, nowIso, ipo.allotment_probed_at),
+  );
+}
+
+async function fetchBigshareCompanies(): Promise<RegistrarCompany[]> {
+  const res = await fetch(BIGSHARE_COMPANIES_URL, { headers: BROWSER_HEADERS });
+  if (!res.ok) throw new Error(`Bigshare status page responded ${res.status}`);
+  return parseBigshareCompanies(await res.text());
+}
+
+async function fetchMufgCompanies(): Promise<RegistrarCompany[]> {
+  const res = await fetch(MUFG_COMPANIES_URL, {
+    method: 'POST',
+    headers: { ...BROWSER_HEADERS, 'Content-Type': 'application/json;charset:utf-8' },
+    body: '{}',
+  });
+  if (!res.ok) throw new Error(`MUFG GetDetails responded ${res.status}`);
+  return parseMufgCompanies(mufgXmlFromBody(await res.json().catch(() => null)));
+}
+
+type Detection = { hits: Map<string, { bigshare?: string; mufg?: string }>; errors: string[] };
+
+/**
+ * Which of `due` the registrars are now answering allotment queries for.
+ *
+ * Both lists are fetched once per sweep, not once per IPO — they are whole-page
+ * fetches whose contents don't vary by caller, so asking twice in one run would
+ * be pure waste. They are also fetched independently: one registrar being down
+ * must not cost us the other's detections, which is the difference between a
+ * missed notification and a delayed one.
+ *
+ * Every due IPO is matched against *both* lists rather than routed by
+ * ipos.registrar. That column defaults to 'KFintech' on every row until the
+ * ipogyani sync overwrites it (20260813000001_registrar_display_name.sql says
+ * as much itself), so routing on it would silently skip real Bigshare and MUFG
+ * issues. Both lists are already in hand; the extra comparison costs nothing.
+ */
+async function detectResultsOut(due: WatchRow[]): Promise<Detection> {
+  const hits = new Map<string, { bigshare?: string; mufg?: string }>();
+  const errors: string[] = [];
+  if (due.length === 0) return { hits, errors };
+
+  const asWatched = (companyId: (row: WatchRow) => string | null): WatchedIpo[] =>
+    due.map((row) => ({
+      id: row.id,
+      companyName: row.company_name,
+      companyId: companyId(row),
+    }));
+
+  const [bigshare, mufg] = await Promise.all([
+    fetchBigshareCompanies().catch((e) => {
+      errors.push(`Bigshare: ${e instanceof Error ? e.message : String(e)}`);
+      return [] as RegistrarCompany[];
+    }),
+    fetchMufgCompanies().catch((e) => {
+      errors.push(`MUFG: ${e instanceof Error ? e.message : String(e)}`);
+      return [] as RegistrarCompany[];
+    }),
+  ]);
+
+  for (const hit of matchWatchedIpos(bigshare, asWatched((r) => r.bigshare_company_id))) {
+    hits.set(hit.ipoId, { ...hits.get(hit.ipoId), bigshare: hit.companyId });
+  }
+  for (const hit of matchWatchedIpos(mufg, asWatched((r) => r.mufg_company_id))) {
+    hits.set(hit.ipoId, { ...hits.get(hit.ipoId), mufg: hit.companyId });
+  }
+
+  return { hits, errors };
+}
+
+/**
+ * Record that an issue's result is published, and backfill the company id the
+ * match came from.
+ *
+ * The backfill is not bookkeeping — it is what makes the notification useful.
+ * A newly-listed issue typically has no company id yet (sync-ipos runs twice a
+ * day and the issue wasn't listed last time it ran), and without one
+ * resolveProvider returns null, so the check the user runs when they tap the
+ * push would fail with "hasn't listed this IPO in its allotment lookup yet".
+ * Writing it here means the tap works the moment the push lands.
+ */
+async function markResultsOut(
+  client: SupabaseClient,
+  ipoId: string,
+  companyIds: { bigshare?: string; mufg?: string },
+): Promise<void> {
+  const patch: Record<string, string> = { allotment_out_at: new Date().toISOString() };
+  if (companyIds.bigshare) patch.bigshare_company_id = companyIds.bigshare;
+  if (companyIds.mufg) patch.mufg_company_id = companyIds.mufg;
+
+  const { error } = await client.from('ipos').update(patch).eq('id', ipoId);
+  if (error) throw error;
+}
+
+/**
+ * Stamp allotment_probed_at on every IPO the watch looked at.
+ *
+ * Every attempt stamps, hit or miss or registrar outage — same reasoning as
+ * touchCheckedAt above: this answers "when did we last look", not "when did we
+ * last find something", and it is what paces the next look.
+ */
+async function stampProbed(client: SupabaseClient, ipoIds: string[]): Promise<void> {
+  if (ipoIds.length === 0) return;
+  await client
+    .from('ipos')
+    .update({ allotment_probed_at: new Date().toISOString() })
+    .in('id', ipoIds);
+}
+
+// ---------------------------------------------------------------------------
+// push notifications — one per applicant, the moment a result is published
 // ---------------------------------------------------------------------------
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
-const OUTCOME_TEXT: Record<AllotmentOutcome, string> = {
-  ALLOTTED: 'Allotted',
-  PARTIAL: 'Partially allotted',
-  NOT_ALLOTTED: 'Not allotted',
-};
-
 type PushSummary = { sent: number; failed: number; pruned: number };
 
-/**
- * Best-effort: a push-delivery hiccup (Expo's service down, a stale/revoked
- * token) must never fail the check itself — the row is already written by the
- * time this runs. Sends in chunks of 100 (Expo's per-request cap), drops
- * push_tokens rows Expo reports as dead, and returns a tally the scheduled
- * sweep folds into sync_log — the on-demand path ignores it.
- */
-async function sendAllotmentPushes(
-  client: SupabaseClient,
-  results: CheckResult[],
-): Promise<PushSummary> {
-  const summary: PushSummary = { sent: 0, failed: 0, pruned: 0 };
+/** One IPO whose result has just been detected as published. */
+type NotifiableIpo = { id: string; company_name: string };
 
-  const resolved = results.filter(
-    (r): r is CheckResult & { status: AllotmentOutcome } =>
-      r.outcome === 'resolved' && !!r.status,
-  );
-  if (resolved.length === 0) return summary;
+/**
+ * Tell everyone still waiting on these issues that the result exists.
+ *
+ * The message deliberately carries no outcome — this path never asked for one.
+ * It carries `ipoId`, which app/_layout.tsx routes to /allotment/[ipoId], the
+ * screen that runs the real check on mount. One notification per applicant per
+ * IPO, however many accounts they applied through: the screen shows all of them
+ * together, so a push per application would be the same news three times.
+ *
+ * Best-effort, like the sender it replaces: a push hiccup (Expo down, a
+ * stale/revoked token) must never fail the sweep. Sends in chunks of 100
+ * (Expo's per-request cap), drops push_tokens rows Expo reports as dead, and
+ * returns a tally the sweep folds into sync_log.
+ *
+ * `delivered` is what lets the caller stamp allotment_notified_at honestly. An
+ * IPO lands in it when at least one of its messages got an ok ticket, and also
+ * when it had no devices to send to at all — nobody to tell is a finished job,
+ * not a failure to retry nightly. An IPO whose every message failed stays out,
+ * so it keeps its null allotment_notified_at, stays in the watch, and is
+ * announced again on the next tick without another registrar lookup. Without
+ * this the two timestamps would collapse into one and an Expo outage would
+ * silently cost everyone the notification.
+ */
+type PushResult = { summary: PushSummary; delivered: Set<string> };
+
+async function sendResultsOutPushes(
+  client: SupabaseClient,
+  ipos: NotifiableIpo[],
+): Promise<PushResult> {
+  const summary: PushSummary = { sent: 0, failed: 0, pruned: 0 };
+  const delivered = new Set<string>();
+  if (ipos.length === 0) return { summary, delivered };
 
   try {
-    const userIds = [...new Set(resolved.map((r) => r.row.userId))];
+    const { data: applicants } = await client
+      .from('ipo_applications')
+      .select('ipo_id, user_id')
+      .eq('status', 'APPLIED')
+      .in('ipo_id', ipos.map((i) => i.id));
+
+    // Deduped per IPO: several accounts under one login is the normal case, and
+    // each of them would otherwise be a separate copy of the same push.
+    const usersByIpo = new Map<string, Set<string>>();
+    for (const row of (applicants ?? []) as { ipo_id: string; user_id: string }[]) {
+      const users = usersByIpo.get(row.ipo_id) ?? new Set<string>();
+      users.add(row.user_id);
+      usersByIpo.set(row.ipo_id, users);
+    }
+
+    // Nobody left waiting on any of them — nothing to send, nothing to retry.
+    const allUsers = [...new Set([...usersByIpo.values()].flatMap((s) => [...s]))];
+    if (allUsers.length === 0) {
+      for (const ipo of ipos) delivered.add(ipo.id);
+      return { summary, delivered };
+    }
+
     const { data: tokenRows } = await client
       .from('push_tokens')
       .select('user_id, token')
-      .in('user_id', userIds);
+      .in('user_id', allUsers);
 
     const tokensByUser = new Map<string, string[]>();
     for (const t of (tokenRows ?? []) as { user_id: string; token: string }[]) {
@@ -725,17 +903,32 @@ async function sendAllotmentPushes(
       ]);
     }
 
-    const messages: ExpoPushMessage[] = resolved.flatMap((r) =>
-      (tokensByUser.get(r.row.userId) ?? []).map((token) => ({
-        to: token,
-        title: 'Allotment result is out',
-        body: `${r.row.companyName}: ${OUTCOME_TEXT[r.status]}`,
-        sound: 'default' as const,
-        channelId: 'allotment-results',
-        data: { applicationId: r.row.id },
-      })),
+    // The ipoId rides *beside* the message, not inside it: Expo is sent exactly
+    // the fields it defines, and attribution of the ticket that comes back does
+    // not depend on reading the payload shape or on Expo tolerating an extra
+    // key. Tickets come back one per message in request order, so the index into
+    // a chunk is the link.
+    const messages: { message: ExpoPushMessage; ipoId: string }[] = ipos.flatMap((ipo) =>
+      [...(usersByIpo.get(ipo.id) ?? [])].flatMap((userId) =>
+        (tokensByUser.get(userId) ?? []).map((token) => ({
+          ipoId: ipo.id,
+          message: {
+            to: token,
+            title: 'Allotment results are out',
+            body: `${ipo.company_name} — tap to check your allotment`,
+            sound: 'default' as const,
+            channelId: 'allotment-results',
+            data: { ipoId: ipo.id },
+          },
+        })),
+      ),
     );
-    if (messages.length === 0) return summary;
+    // Every applicant is on a device with no push token registered. Same as
+    // nobody waiting: there is no one to reach, so nothing to retry.
+    if (messages.length === 0) {
+      for (const ipo of ipos) delivered.add(ipo.id);
+      return { summary, delivered };
+    }
 
     const dead = new Set<string>();
     for (const chunk of chunkMessages(messages)) {
@@ -746,7 +939,7 @@ async function sendAllotmentPushes(
             'Content-Type': 'application/json',
             Accept: 'application/json',
           },
-          body: JSON.stringify(chunk),
+          body: JSON.stringify(chunk.map((m) => m.message)),
         });
         const tickets = parseSendTickets(await res.json().catch(() => null));
         // No tickets back means Expo rejected the whole chunk (bad body, auth).
@@ -760,9 +953,10 @@ async function sendAllotmentPushes(
           if (ticket.status === 'ok') {
             summary.sent += 1;
             anyOk = true;
+            if (chunk[i]) delivered.add(chunk[i].ipoId);
           } else {
             summary.failed += 1;
-            if (deviceIsGone(ticket) && chunk[i]) chunkDead.add(chunk[i].to);
+            if (deviceIsGone(ticket) && chunk[i]) chunkDead.add(chunk[i].message.to);
           }
         });
         // Only prune from a chunk that delivered at least one message. A chunk
@@ -784,10 +978,12 @@ async function sendAllotmentPushes(
       if (!error) summary.pruned = dead.size;
     }
   } catch {
-    // Never let a push failure surface as a check failure.
+    // Never let a push failure surface as a check failure. `delivered` keeps
+    // whatever got through before the throw, so a partial run still retires the
+    // IPOs it did announce.
   }
 
-  return summary;
+  return { summary, delivered };
 }
 
 /**
@@ -906,7 +1102,10 @@ async function handleOnDemand(
     });
   }
 
-  await sendAllotmentPushes(serviceClient, checked);
+  // No push from this path. The caller is a user looking at the result on
+  // screen right now — notifying their own phone about what they just asked for
+  // is noise, and the only notification this function still sends is "a result
+  // exists", which they plainly already know.
 
   return new Response(JSON.stringify({ ok: true, results }, null, 2), {
     status: 200,
@@ -991,18 +1190,61 @@ Deno.serve(async (req) => {
     }
 
     const nowIso = new Date().toISOString();
-    const candidates = await loadCandidates(client);
-    const due = dueRows(candidates, nowIso);
+    const watched = await loadWatchedIpos(client);
 
-    const results = await runChecks(client, due);
-    checked = results.length;
-    for (const result of results) {
-      if (result.outcome === 'resolved') resolved += 1;
-      else if (result.outcome === 'error' && result.message)
-        errors.push(result.message);
+    // Detected on an earlier tick but never announced — the push failed, or the
+    // isolate died between the two. No registrar call can tell us anything new
+    // about these, so they skip detection and the cadence gate entirely and go
+    // straight back into the fan-out.
+    const notifiable: NotifiableIpo[] = watched
+      .filter((ipo) => ipo.allotment_out_at !== null)
+      .map((ipo) => ({ id: ipo.id, company_name: ipo.company_name }));
+
+    const due = dueIpos(watched.filter((ipo) => ipo.allotment_out_at === null), nowIso);
+    checked = due.length;
+
+    const detection = await detectResultsOut(due);
+    errors.push(...detection.errors);
+
+    // Marked one at a time, and only the ones that were marked get announced.
+    // An IPO whose UPDATE failed must not be notified: allotment_out_at is the
+    // record that the result exists, and announcing without it would mean the
+    // next tick re-detects and re-announces the same issue.
+    for (const ipo of due) {
+      const companyIds = detection.hits.get(ipo.id);
+      if (!companyIds) continue;
+      try {
+        await markResultsOut(client, ipo.id, companyIds);
+        notifiable.push({ id: ipo.id, company_name: ipo.company_name });
+      } catch (e) {
+        errors.push(
+          `${ipo.company_name}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
     }
 
-    push = await sendAllotmentPushes(client, results);
+    const sendResult = await sendResultsOutPushes(client, notifiable);
+    push = sendResult.summary;
+
+    // Only for the IPOs the fan-out actually reached (or found nobody to reach
+    // — see sendResultsOutPushes). This is the column the watch selects on, so
+    // stamping it is what retires an issue for good; stamping one whose every
+    // push failed would turn an Expo outage into a notification nobody ever
+    // gets, which is the whole reason it is a separate column from
+    // allotment_out_at.
+    const notified = notifiable.filter((i) => sendResult.delivered.has(i.id));
+    // Counted after the send, not before it: an issue whose push failed has not
+    // been announced, and reporting it as though it had would make a night of
+    // Expo failures read as a night of successful notifications.
+    resolved = notified.length;
+    if (notified.length > 0) {
+      await client
+        .from('ipos')
+        .update({ allotment_notified_at: new Date().toISOString() })
+        .in('id', notified.map((i) => i.id));
+    }
+
+    await stampProbed(client, due.map((i) => i.id));
   } catch (e) {
     ok = false;
     errors.push(e instanceof Error ? e.message : String(e));
@@ -1012,13 +1254,13 @@ Deno.serve(async (req) => {
     if (held) await releaseSweepLease(client);
   }
 
-  // A tick that found nothing due is now the overwhelmingly common case: the
-  // cron runs every minute, and even inside the window a row is only due
-  // every two. Logging each one would write four figures of rows a day and
-  // push every other provider out of latestSyncStatus' view, which is exactly
-  // the staleness banner this table exists to feed. Errors and sweeps that
-  // actually checked something still log, so a broken sweep stays visible.
-  if (ok && checked === 0) {
+  // A tick that watched nothing and announced nothing is the overwhelmingly
+  // common case: the cron runs every minute, and even inside the window an IPO
+  // is only due every two. Logging each one would write four figures of rows a
+  // day and push every other provider out of latestSyncStatus' view, which is
+  // exactly the staleness banner this table exists to feed. Errors, and runs
+  // that did something, still log — so a broken watch stays visible.
+  if (ok && checked === 0 && resolved === 0 && push.failed === 0 && errors.length === 0) {
     return new Response(
       JSON.stringify({ ok, checked, resolved, errors }, null, 2),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1027,11 +1269,11 @@ Deno.serve(async (req) => {
 
   const base =
     errors.length > 0
-      ? `${checked} checked, ${resolved} resolved, ${errors.length} failed: ${errors.slice(0, 3).join('; ')}`
-      : `${checked} checked, ${resolved} resolved`;
-  // Always leave a trace when there was something to notify about: a run that
-  // resolved rows but sent nothing means no device is registered (or the push
-  // path is broken), and a silent sync_log is how that stayed hidden before.
+      ? `${checked} watched, ${resolved} announced, ${errors.length} failed: ${errors.slice(0, 3).join('; ')}`
+      : `${checked} watched, ${resolved} announced`;
+  // Always leave a trace when there was something to announce: a run that found
+  // a result but sent nothing means no device is registered (or the push path
+  // is broken), and a silent sync_log is how that stayed hidden before.
   const pushNote =
     push.sent + push.failed > 0
       ? `; push ${push.sent} sent` +
@@ -1042,7 +1284,9 @@ Deno.serve(async (req) => {
         : '';
 
   await client.from('sync_log').insert({
-    // Covers both registrars now — see checkOne's dispatch by row.provider.
+    // Still ALLOTMENT_CHECK: this is the same job from the app's point of view
+    // (lib/db/ipos.ts reads it for the staleness banner), and renaming the tag
+    // would orphan every historical row and blank the banner.
     provider: 'ALLOTMENT_CHECK',
     ok,
     rows_upserted: resolved,

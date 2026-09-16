@@ -820,6 +820,27 @@ function resolveCompanyMatch(
     }
   }
 
+  // Then the whole name with every word boundary removed.
+  //
+  // The pass above can only ever compare names that agree on where one word
+  // ends and the next begins, because it buckets by an exact first word. A
+  // registrar that writes "STEAMHOUSE INDIA LIMITED" where the exchanges write
+  // "Steam House India Limited" disagrees about exactly that, so it doesn't
+  // merely fail `firstTwoWordsMatch` — `byFirstWord` has no "steamhouse"
+  // bucket at all, and the fuzzy second-word rule is never reached. That cost
+  // a real issue its allotment notifications: the sweep skips any application
+  // whose IPO has no registrar company id, so the row was never checked.
+  //
+  // normalizeName already strips every non-alphanumeric character, so both
+  // spellings collapse to "steamhouse" and this is an exact comparison, not a
+  // second fuzzy rule. It runs second so the first-word pass keeps deciding
+  // anything it can already decide.
+  for (const candidate of indexes.byName.get(normalizeName(companyName)) ?? []) {
+    if (claimed.has(candidate.id)) continue;
+    claimed.add(candidate.id);
+    return candidate.id;
+  }
+
   return null;
 }
 
